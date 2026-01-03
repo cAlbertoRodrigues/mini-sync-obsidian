@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "declaration": true,
+    "sourceMap": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+
+    "baseUrl": ".",
+    "paths": {
+      "@mini-sync/core-domain": ["packages/core-domain/dist/index.d.ts"],
+      "@mini-sync/core-application": ["packages/core-application/src/index.ts"]
+    }
+  }
+}
