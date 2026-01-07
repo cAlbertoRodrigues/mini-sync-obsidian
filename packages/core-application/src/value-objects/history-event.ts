@@ -7,6 +7,8 @@ export type HistoryEvent = {
     origin: string;
     change: FileMetadata;
 
+    content?: string;
+    encoding?: "utf-8";
     
 }
 
