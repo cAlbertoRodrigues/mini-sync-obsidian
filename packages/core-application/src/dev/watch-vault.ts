@@ -7,25 +7,47 @@ import type { FileMetadata } from "../value-objects/file-metadata";
 import { NodeHistoryRepository } from "../adapters/node-history-repository";
 import { createHistoryEvent } from "../value-objects/history-event";
 
+function stripOuterQuotes(input: string): string {
+  // remove apenas 1 par de aspas externas, se existir
+  return input.replace(/^"(.*)"$/, "$1");
+}
+
+function isInsideVault(relPath: string): boolean {
+  // Se relative começar com ".." ou for absoluto, está fora
+  return (
+    relPath !== "" &&
+    !relPath.startsWith("..") &&
+    !relPath.startsWith("../") &&
+    !path.isAbsolute(relPath)
+  );
+}
 
 async function main() {
-  const vaultPath = process.argv[2];
-  if (!vaultPath) {
+  const rawVaultPath = process.argv[2];
+  if (!rawVaultPath) {
     console.error("Uso: pnpm dev:watch -- <caminho-do-vault>");
     process.exit(1);
   }
 
-  
-  const historyRepo = new NodeHistoryRepository();
-
-
+  const vaultPath = stripOuterQuotes(rawVaultPath);
   const vaultAbs = path.resolve(vaultPath);
+
+  const historyRepo = new NodeHistoryRepository();
   const watcher = new ChokidarFileWatcher();
   const hasher = new NodeFileHasher();
 
   watcher.onEvent(async (e) => {
-    const abs = path.resolve(e.path);
+    // e.path já deve ser absoluto (do watcher). Se não for, torna absoluto.
+    const abs = path.isAbsolute(e.path) ? e.path : path.join(vaultAbs, e.path);
+
+    // caminho RELATIVO ao vault (isso é o que vai para o histórico)
     const rel = path.relative(vaultAbs, abs).replaceAll("\\", "/");
+
+    // Se por algum motivo o evento estiver fora do vault, ignora
+    if (!isInsideVault(rel)) return;
+
+    // Evita loop e sujeira: nunca registrar a pasta interna do mini-sync
+    if (rel.startsWith(".mini-sync/") || rel === ".mini-sync") return;
 
     const meta: FileMetadata = {
       path: rel,
@@ -34,19 +56,33 @@ async function main() {
       occurredAt: e.occurredAt,
     };
 
+    let metaContent: string | undefined;
+
     if (e.type !== "deleted") {
       try {
         const stat = await fs.stat(abs);
         meta.sizeBytes = stat.size;
         meta.mtimeMs = stat.mtimeMs;
 
+        // hash do arquivo
         meta.hash = await hasher.hashFile(abs);
+
+        // Conteúdo só para markdown (por enquanto)
+        if (rel.toLowerCase().endsWith(".md")) {
+          metaContent = await fs.readFile(abs, "utf-8");
+        }
       } catch (err) {
-        console.error("Falha ao ler/hash:", abs, err);
+        // Pode acontecer se o arquivo sumir entre o evento e a leitura
+        console.error("Falha ao ler/stat/hash:", abs, err);
       }
     }
 
     const event = createHistoryEvent(meta, "local");
+    if (metaContent !== undefined) {
+      event.content = metaContent;
+      event.encoding = "utf-8";
+    }
+
     await historyRepo.append(vaultAbs, event);
 
     console.log(
