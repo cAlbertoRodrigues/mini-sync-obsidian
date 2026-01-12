@@ -19,6 +19,12 @@ import { compareAllStates } from "../services/sync-diff";
 import { resolveKeepLocal } from "../services/keep-local";
 import { resolveKeepRemote } from "../services/keep-remote";
 
+// ✅ retry (fica no topo)
+import { withRetry } from "../application/with-retry";
+import { defaultNetworkRetryPolicy } from "../application/default-network-retry-policy";
+import { sleep } from "../infra/sleep";
+
+const retryPolicy = defaultNetworkRetryPolicy();
 /**
  * Converte hash para string comparável. Suporta:
  * - string
@@ -113,7 +119,6 @@ function buildLatestLocalByPath(events: HistoryEvent[]): Map<string, HistoryEven
   }
   return map;
 }
-
 async function main() {
   const localVault = process.argv[2];
   const remoteRoot = process.argv[3];
@@ -200,7 +205,12 @@ async function main() {
   const cursor = await cursorStore.load(vaultAbs);
   console.log("Pull a partir do cursor:", cursor?.value ?? "null");
 
-  const { events: pulled, nextCursor } = await provider.pullHistoryEvents(cursor);
+  // ✅ RETRY NO PULL PRINCIPAL
+  const { events: pulled, nextCursor } = await withRetry(
+    () => provider.pullHistoryEvents(cursor),
+    retryPolicy,
+    sleep
+  );
 
   console.log("Pulled:", pulled.length, "nextCursor:", nextCursor?.value ?? "null");
 
@@ -230,8 +240,12 @@ async function main() {
     synced: comparisons.filter((c) => c.status === "synced").length,
   });
 
-  // para keep-remote (precisa do conjunto completo remoto para encontrar conteúdo)
-  const { events: remoteAllNow } = await provider.pullHistoryEvents(null);
+  // ✅ RETRY NO PULL DO "REMOTE COMPLETO" (necessário para keep-remote)
+  const { events: remoteAllNow } = await withRetry(
+    () => provider.pullHistoryEvents(null),
+    retryPolicy,
+    sleep
+  );
 
   if (conflictsBefore.length > 0) {
     console.log(
@@ -294,7 +308,6 @@ async function main() {
     }
 
     // Após aplicar, marca como sincronizado no state
-    // (usa o hash do próprio evento remoto aplicado)
     const latestAppliedByPath = buildLatestLocalByPath(toApply);
     for (const [p, ev] of latestAppliedByPath.entries()) {
       if (isDeletedEvent(ev)) {
@@ -327,84 +340,88 @@ async function main() {
   /* 6) PUSH LAST (local -> remote), mas evita empurrar paths ainda em conflito */
   /* ------------------------------------------------------------------ */
 
-  // Recarrega conflitos atuais (se existirem, não empurra esses paths)
   const finalStatesBeforePush = await stateStore.loadAll(vaultAbs);
-  const { conflicts: finalConflictsBeforePush, comparisons: compsBeforePush } =
-    compareAllStates(finalStatesBeforePush);
+  const { conflicts: finalConflictsBeforePush } = compareAllStates(finalStatesBeforePush);
 
   const blockedPaths = new Set(finalConflictsBeforePush.map((c) => c.path));
 
-  // Dedupe no remoto
-  const { events: remoteAllBeforePush } = await provider.pullHistoryEvents(null);
+  // ✅ RETRY NO PULL PARA DEDUPE ANTES DO PUSH
+  const { events: remoteAllBeforePush } = await withRetry(
+    () => provider.pullHistoryEvents(null),
+    retryPolicy,
+    sleep
+  );
+
   const remoteIds = new Set(remoteAllBeforePush.map((e) => e.id));
 
-const signature = (e: HistoryEvent) =>
-  `${e.change.path}|${e.change.changeType}|${normalizeHash(e.change.hash)}|${e.occurredAtIso}`;
+  const signature = (e: HistoryEvent) =>
+    `${e.change.path}|${e.change.changeType}|${normalizeHash(e.change.hash)}|${e.occurredAtIso}`;
 
-const remoteSigs = new Set(remoteAllBeforePush.map(signature));
+  const remoteSigs = new Set(remoteAllBeforePush.map(signature));
 
-const toPush = allLocalEvents.filter(
-  (e) => !blockedPaths.has(e.change.path) && !remoteIds.has(e.id) && !remoteSigs.has(signature(e))
-);
+  const toPush = allLocalEvents.filter(
+    (e) => !blockedPaths.has(e.change.path) && !remoteIds.has(e.id) && !remoteSigs.has(signature(e))
+  );
 
-const remoteEventsById = new Map(remoteAllBeforePush.map(e => [e.id, e]));
+  const remoteEventsById = new Map(remoteAllBeforePush.map((e) => [e.id, e]));
 
+  // ✅ RETRY NO PUSH FINAL
+  await withRetry(
+    () => provider.pushHistoryEvents(toPush),
+    retryPolicy,
+    sleep
+  );
 
-  await provider.pushHistoryEvents(toPush);
+  // ✅ Após push bem-sucedido, convergir para synced imediatamente.
+  const latestPushedByPath = buildLatestLocalByPath(toPush);
+  for (const [p, ev] of latestPushedByPath.entries()) {
+    if (isDeletedEvent(ev)) {
+      await upsertStatePatch({
+        path: p,
+        lastLocalHash: undefined,
+        lastRemoteHash: undefined,
+        lastSyncedHash: undefined,
+      });
+    } else {
+      const h = pickHashFromEvent(ev);
+      if (!h) continue;
 
-// ✅ Após push bem-sucedido, o remoto "já tem" essas mudanças.
-// Então podemos convergir o estado para synced imediatamente.
-const latestPushedByPath = buildLatestLocalByPath(toPush);
-for (const [p, ev] of latestPushedByPath.entries()) {
-  if (isDeletedEvent(ev)) {
-    await upsertStatePatch({
-      path: p,
-      lastLocalHash: undefined,
-      lastRemoteHash: undefined,
-      lastSyncedHash: undefined,
-    });
-  } else {
-    const h = pickHashFromEvent(ev);
-    if (!h) continue;
-
-    await upsertStatePatch({
-      path: p,
-      lastLocalHash: h,
-      lastRemoteHash: h,
-      lastSyncedHash: h,
-    });
+      await upsertStatePatch({
+        path: p,
+        lastLocalHash: h,
+        lastRemoteHash: h,
+        lastSyncedHash: h,
+      });
+    }
   }
-}
-
 
   console.log("Push OK:", toPush.length, "novos eventos enviados.");
 
   // 🔧 RECONCILIAÇÃO:
-// Eventos locais que JÁ EXISTEM no remoto devem atualizar lastRemoteHash/lastSyncedHash
-const alreadyInRemote = allLocalEvents.filter(e => remoteEventsById.has(e.id));
+  const alreadyInRemote = allLocalEvents.filter((e) => remoteEventsById.has(e.id));
+  const latestAckedByPath = buildLatestLocalByPath(alreadyInRemote);
 
-const latestAckedByPath = buildLatestLocalByPath(alreadyInRemote);
+  for (const [p, ev] of latestAckedByPath.entries()) {
+    if (isDeletedEvent(ev)) {
+      await upsertStatePatch({
+        path: p,
+        lastLocalHash: undefined,
+        lastRemoteHash: undefined,
+        lastSyncedHash: undefined,
+      });
+    } else {
+      const h = pickHashFromEvent(ev);
+      if (!h) continue;
 
-for (const [p, ev] of latestAckedByPath.entries()) {
-  if (isDeletedEvent(ev)) {
-    await upsertStatePatch({
-      path: p,
-      lastLocalHash: undefined,
-      lastRemoteHash: undefined,
-      lastSyncedHash: undefined,
-    });
-  } else {
-    const h = pickHashFromEvent(ev);
-    if (!h) continue;
-
-    await upsertStatePatch({
-      path: p,
-      lastLocalHash: h,
-      lastRemoteHash: h,
-      lastSyncedHash: h,
-    });
+      await upsertStatePatch({
+        path: p,
+        lastLocalHash: h,
+        lastRemoteHash: h,
+        lastSyncedHash: h,
+      });
+    }
   }
-}
+
   /* ------------------------------------------------------------------ */
   /* 7) Final summary */
   /* ------------------------------------------------------------------ */
@@ -424,7 +441,6 @@ for (const [p, ev] of latestAckedByPath.entries()) {
     console.log("⚠️ Conflitos restantes:");
     for (const c of conflictsAfter) console.log(`- ${c.path} [${c.type}]`);
   } else {
-    // útil para debug: mostra que o fluxo pull-first não esconde conflitos
     if (blockedPaths.size > 0) {
       console.log(
         "✅ Nenhum conflito restante. Paths que foram bloqueados do push nesta execução:",

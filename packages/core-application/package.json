@@ -12,6 +12,9 @@
     "build": "pnpm exec tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@mini-sync/core-domain": "workspace:*"
+    "@google-cloud/local-auth": "^3.0.1",
+    "@mini-sync/core-domain": "workspace:*",
+    "google-auth-library": "^10.5.0",
+    "googleapis": "^170.0.0"
   }
 }
