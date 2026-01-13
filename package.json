@@ -7,6 +7,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev:sync-remote": "tsx packages/core-application/src/dev/sync-remote-folder.ts",
+    "dev:sync-drive": "tsx packages/core-application/src/dev/sync-drive.ts",
     "dev:watch": "tsx packages/core-application/src/dev/watch-vault.ts",
     "build": "pnpm -r run build",
     "lint": "eslint .",

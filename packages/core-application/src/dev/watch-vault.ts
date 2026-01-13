@@ -13,13 +13,25 @@ function stripOuterQuotes(input: string): string {
 }
 
 function isInsideVault(relPath: string): boolean {
-  // Se relative começar com ".." ou for absoluto, está fora
   return (
     relPath !== "" &&
     !relPath.startsWith("..") &&
     !relPath.startsWith("../") &&
     !path.isAbsolute(relPath)
   );
+}
+
+async function exists(p: string) {
+  try {
+    await fs.stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 async function main() {
@@ -36,7 +48,28 @@ async function main() {
   const watcher = new ChokidarFileWatcher();
   const hasher = new NodeFileHasher();
 
+  // lock usado pelo sync-drive durante apply (e vamos respeitar aqui)
+  const applyingLockAbs = path.join(vaultAbs, ".mini-sync", "state", "applying.lock");
+
+  // cooldown para pegar autosave/normalização do Obsidian logo após apply
+  let ignoreUntilMs = 0;
+
+  // dedupe rápido: evita modified repetido com mesmo hash (por path)
+  const lastHashByPath = new Map<string, string>();
+
   watcher.onEvent(async (e) => {
+    // Se o sync está aplicando (ou acabou de aplicar), não registrar nada
+    const now = Date.now();
+
+    // Se lock existe, estende o ignore para logo após o unlock
+    if (await exists(applyingLockAbs)) {
+      ignoreUntilMs = Math.max(ignoreUntilMs, now + 1500);
+      return;
+    }
+    if (now < ignoreUntilMs) {
+      return;
+    }
+
     // e.path já deve ser absoluto (do watcher). Se não for, torna absoluto.
     const abs = path.isAbsolute(e.path) ? e.path : path.join(vaultAbs, e.path);
 
@@ -48,6 +81,9 @@ async function main() {
 
     // Evita loop e sujeira: nunca registrar a pasta interna do mini-sync
     if (rel.startsWith(".mini-sync/") || rel === ".mini-sync") return;
+
+    // Evita ruído do Obsidian (workspace/cache/metadata)
+    if (rel.startsWith(".obsidian/") || rel === ".obsidian") return;
 
     const meta: FileMetadata = {
       path: rel,
@@ -67,14 +103,25 @@ async function main() {
         // hash do arquivo
         meta.hash = await hasher.hashFile(abs);
 
+        // ✅ dedupe: se modified com mesmo hash do último, ignora
+        if (e.type === "modified" && meta.hash?.value) {
+          const prev = lastHashByPath.get(rel);
+          if (prev && prev === meta.hash.value) {
+            return;
+          }
+          lastHashByPath.set(rel, meta.hash.value);
+        }
+
         // Conteúdo só para markdown (por enquanto)
         if (rel.toLowerCase().endsWith(".md")) {
           metaContent = await fs.readFile(abs, "utf-8");
         }
       } catch (err) {
-        // Pode acontecer se o arquivo sumir entre o evento e a leitura
         console.error("Falha ao ler/stat/hash:", abs, err);
       }
+    } else {
+      // se deletou, limpa dedupe
+      lastHashByPath.delete(rel);
     }
 
     const event = createHistoryEvent(meta, "local");
