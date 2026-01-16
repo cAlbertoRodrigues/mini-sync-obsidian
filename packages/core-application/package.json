@@ -1,0 +1,24 @@
+{
+  "name": "@mini-sync/core-application",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "compilerOptions": {
+    "declaration": true,
+    "declarationMap": true
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "pnpm exec tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@google-cloud/local-auth": "^3.0.1",
+    "@mini-sync/core-domain": "workspace:*",
+    "google-auth-library": "^10.5.0",
+    "googleapis": "^170.0.0"
+  }
+}

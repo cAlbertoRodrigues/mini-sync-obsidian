@@ -1,0 +1,36 @@
+{
+  "name": "mini-sync-obsidian",
+  "private": true,
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev:sync-remote": "tsx packages/core-application/src/dev/sync-remote-folder.ts",
+    "dev:sync-drive": "tsx packages/core-application/src/dev/sync-drive.ts",
+    "dev:watch": "tsx packages/core-application/src/dev/watch-vault.ts",
+    "build": "pnpm -r run build",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier . --write .",
+    "format:check": "prettier . --check .",
+    "dev": "pnpm -r run dev"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.27.0",
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/node": "^25.0.3",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.7.4",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.51.0"
+  },
+  "dependencies": {
+    "chokidar": "^5.0.0"
+  }
+}

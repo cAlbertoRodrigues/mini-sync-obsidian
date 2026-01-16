@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "declaration": true,
+    "baseUrl": ".",
+    "paths": {
+      "@mini-sync/core-domain": ["packages/core-domain/dist/index.d.ts"],
+      "@mini-sync/core-domain/*": ["packages/core-domain/dist/*"],
+      "@mini-sync/core-application": ["packages/core-application/src/index.ts"],
+      "@mini-sync/core-application/*": ["packages/core-application/src/*"]
+    }
+  }
+}
