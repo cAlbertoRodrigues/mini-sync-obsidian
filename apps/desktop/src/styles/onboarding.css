@@ -1,0 +1,211 @@
+:root{
+  --bg: #1e1e1e;
+  --panel: #232323;
+  --panel-2: #262626;
+  --border: rgba(255,255,255,.08);
+  --text: rgba(255,255,255,.92);
+  --muted: rgba(255,255,255,.55);
+
+  --accent: #7cda58; /* verde do seu icon */
+  --accent-2: #57c23a;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+}
+
+.ms-shell{
+  height: 100vh;
+  display: grid;
+  grid-template-columns: 240px 1fr;
+}
+
+.ms-sidebar{
+  background: #1b1b1b;
+  border-right: 1px solid var(--border);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ms-sidebar-header{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ms-sidebar-title{
+  font-size: 12px;
+  letter-spacing: .12em;
+  color: var(--muted);
+}
+
+.ms-sidebar-actions{
+  display: flex;
+  gap: 8px;
+}
+
+.ms-icon-btn{
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #202020;
+  color: var(--text);
+  cursor: pointer;
+}
+.ms-icon-btn:hover{
+  background: #272727;
+}
+
+.ms-vault-list{
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ms-vault-item{
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  padding: 10px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.ms-vault-item:hover{
+  background: rgba(255,255,255,.04);
+  border-color: var(--border);
+}
+.ms-vault-item.is-active{
+  background: rgba(255,255,255,.06);
+  border-color: rgba(124,218,88,.25);
+}
+
+.ms-vault-name{
+  font-weight: 600;
+  font-size: 14px;
+}
+.ms-vault-meta{
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ms-main{
+  background: var(--bg);
+  position: relative;
+  overflow: hidden;
+}
+
+.ms-center{
+  height: 100%;
+  display: grid;
+  place-content: center;
+  gap: 10px;
+  padding: 28px;
+  text-align: center;
+}
+
+.ms-logo{
+  width: 110px;
+  height: 110px;
+  margin: 0 auto 6px;
+  image-rendering: auto;
+}
+
+.ms-title{
+  margin: 0;
+  font-size: 44px;
+  font-family: ui-serif, Georgia, "Times New Roman", serif;
+}
+
+.ms-subtitle{
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.ms-setup{
+  padding: 26px 28px;
+  max-width: 720px;
+}
+
+.ms-setup-top{
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.ms-link-btn{
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px 0;
+}
+.ms-link-btn:hover{
+  color: var(--text);
+}
+
+.ms-setup-title{
+  margin: 0;
+  font-size: 26px;
+}
+.ms-setup-subtitle{
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.ms-card{
+  margin-top: 18px;
+  background: #222;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.ms-field{
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 10px;
+  background: rgba(255,255,255,.03);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.ms-field-label{
+  color: var(--muted);
+  font-size: 12px;
+}
+.ms-field-value{
+  font-size: 13px;
+}
+
+.ms-setup-footer{
+  margin-top: 18px;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.ms-primary{
+  border: 1px solid rgba(0,0,0,.25);
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+  color: #0b1208;
+  font-weight: 700;
+  padding: 10px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.ms-primary:hover{
+  filter: brightness(1.03);
+}

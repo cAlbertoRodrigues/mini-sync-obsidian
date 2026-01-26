@@ -1,0 +1,20 @@
+{
+  "name": "@mini-sync/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && cpy \"src/index.html\" dist --flat && cpy \"src/preload.cjs\" dist --flat && cpy \"src/styles/**/*\" dist/styles && cpy \"src/assets/**/*\" dist/assets",
+    "dev": "pnpm run build && electron ."
+  },
+  "dependencies": {
+    "@mini-sync/core-application": "workspace:*",
+    "@mini-sync/core-domain": "workspace:*",
+    "electron": "^29.0.0"
+  },
+  "devDependencies": {
+    "cpy-cli": "^6.0.0",
+    "typescript": "^5.3.3"
+  }
+}
