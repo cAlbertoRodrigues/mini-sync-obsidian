@@ -1,9 +1,154 @@
-cat > .gitignore <<'EOF'
-node_modules
-dist
-build
-out
-.env
+############################################
+# OS / Editor
+############################################
 .DS_Store
+Thumbs.db
+Desktop.ini
+
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+.idea/
+*.iml
+
+############################################
+# Logs
+############################################
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 *.log
-EOF
+
+############################################
+# Node / Package managers
+############################################
+node_modules/
+**/node_modules/
+
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+
+# pnpm store (sometimes local)
+.pnpm-store/
+**/.pnpm-store/
+
+############################################
+# Build outputs (TypeScript / bundlers)
+############################################
+dist/
+**/dist/
+build/
+**/build/
+out/
+**/out/
+lib/
+**/lib/
+bin/
+**/bin/
+
+# Coverage
+coverage/
+**/coverage/
+.nyc_output/
+
+############################################
+# TypeScript incremental / caches
+############################################
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+############################################
+# Generated JS + sourcemaps (robusto)
+# (evita que JS/Maps gerados em src subam)
+############################################
+**/*.js
+**/*.cjs
+**/*.mjs
+**/*.js.map
+**/*.cjs.map
+**/*.mjs.map
+
+############################################
+# Generated typings (se você NÃO versiona dist)
+############################################
+**/*.d.ts
+**/*.d.ts.map
+
+############################################
+# Env files / secrets
+############################################
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+############################################
+# Electron (runtime + packaging)
+############################################
+# Electron builder / forge / packagers
+release/
+**/release/
+dist_electron/
+**/dist_electron/
+app-out/
+**/app-out/
+out/
+**/out/
+
+# Local user data (às vezes aparece)
+*.asar
+*.asar.unpacked/
+
+############################################
+# Temporary / misc
+############################################
+tmp/
+temp/
+**/tmp/
+**/temp/
+
+.cache/
+**/.cache/
+
+############################################
+# Tests artifacts
+############################################
+junit.xml
+**/junit.xml
+
+############################################
+# Obsidian (se o repo tocar vaults)
+############################################
+.obsidian/
+.mini-sync/
+.trash/
+.DS_Store
+
+############################################
+# Windows shortcuts / links
+############################################
+*.lnk
+
+############################################
+# Optional: lock files (mantenha SÓ o pnpm-lock.yaml)
+############################################
+package-lock.json
+yarn.lock
+bun.lockb
