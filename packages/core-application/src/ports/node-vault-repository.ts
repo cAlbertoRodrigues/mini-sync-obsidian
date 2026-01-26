@@ -1,7 +1,8 @@
-import fs from "fs/promises";
-import { createReadStream } from "fs";
-import path from "path";
-import crypto from "crypto";
+import fs from "node:fs/promises";
+import { createReadStream, type Dirent } from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+
 
 import type { VaultRepository } from "../ports/vault-repository";
 import type { Snapshot } from "@mini-sync/core-domain";
@@ -26,9 +27,9 @@ export class NodeVaultRepository implements VaultRepository {
    */
   private async collectFiles(root: string, current: string = ""): Promise<string[]> {
     const dir = path.join(root, current);
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
+      entries = (await fs.readdir(dir, { withFileTypes: true })) as Dirent[];
     } catch {
       return [];
     }
