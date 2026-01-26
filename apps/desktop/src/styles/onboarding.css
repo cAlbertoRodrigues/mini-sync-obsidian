@@ -6,23 +6,29 @@
   --text: rgba(255,255,255,.92);
   --muted: rgba(255,255,255,.55);
 
-  --accent: #7cda58; /* verde do seu icon */
+  --accent: #7cda58;
   --accent-2: #57c23a;
 }
+
+/* ---------- BASE ---------- */
 
 html, body {
   height: 100%;
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
 }
+
+/* ---------- LAYOUT ---------- */
 
 .ms-shell{
   height: 100vh;
   display: grid;
   grid-template-columns: 240px 1fr;
 }
+
+/* ---------- SIDEBAR (1) ---------- */
 
 .ms-sidebar{
   background: #1b1b1b;
@@ -74,7 +80,7 @@ html, body {
   border: 1px solid transparent;
   background: transparent;
   color: var(--text);
-  padding: 10px 10px;
+  padding: 10px;
   border-radius: 10px;
   cursor: pointer;
 }
@@ -97,39 +103,114 @@ html, body {
   color: var(--muted);
 }
 
+/* ---------- MAIN ---------- */
+
 .ms-main{
   background: var(--bg);
-  position: relative;
   overflow: hidden;
 }
 
-.ms-center{
+/* ---------- HOME (2 + 3) ---------- */
+
+.ms-home{
   height: 100%;
-  display: grid;
-  place-content: center;
-  gap: 10px;
   padding: 28px;
-  text-align: center;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 28px;
 }
 
-.ms-logo{
-  width: 110px;
-  height: 110px;
-  margin: 0 auto 6px;
-  image-rendering: auto;
+/* (2) Ícone + nome centralizados */
+
+.ms-brand{
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  margin-top: 6px;
 }
 
-.ms-title{
-  margin: 0;
+.ms-brand-logo{
+  width: 120px;
+  height: 120px;
+  object-fit: contain;
+  filter: drop-shadow(0 10px 18px rgba(0,0,0,.35));
+}
+
+.ms-brand-name{
   font-size: 44px;
+  font-weight: 700;
   font-family: ui-serif, Georgia, "Times New Roman", serif;
 }
 
-.ms-subtitle{
-  margin: 0;
-  color: var(--muted);
-  font-size: 14px;
+/* ---------- ACTION CARDS (3) ---------- */
+
+.ms-actions{
+  width: min(860px, 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: 14px;
+  align-content: start;
 }
+
+.ms-action{
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 18px;
+
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 16px;
+}
+
+.ms-action-text{
+  display: grid;
+  gap: 6px;
+}
+
+.ms-action-title{
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.ms-action-subtitle{
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+/* ---------- BOTÕES (PADRÃO OBSIDIAN) ---------- */
+
+.ms-btn{
+  height: 34px;
+  min-width: 92px;
+  padding: 0 16px;
+
+  border-radius: 8px;
+  border: 1px solid var(--border);
+
+  background: var(--panel-2);
+  color: var(--text);
+
+  font-weight: 600;
+  cursor: pointer;
+}
+.ms-btn:hover{
+  background: #2c2c2c;
+}
+
+.ms-btn--primary{
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+  border-color: rgba(0,0,0,.25);
+  color: #0b1208;
+  font-weight: 700;
+}
+.ms-btn--primary:hover{
+  filter: brightness(1.04);
+}
+
+/* ---------- SETUP (já existente) ---------- */
 
 .ms-setup{
   padding: 26px 28px;
@@ -175,10 +256,9 @@ html, body {
 
 .ms-field{
   display: flex;
-  align-items: baseline;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 10px;
+  padding: 10px;
   background: rgba(255,255,255,.03);
   border: 1px solid var(--border);
   border-radius: 12px;

@@ -9,17 +9,13 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 813,
     height: 654,
-    backgroundColor: "#1e1e1e",
-    frame: true,
-    resizable: false,
     webPreferences: {
-      preload: path.join(__dirname, "../src/preload.cjs"),
-      contextIsolation: true,
-    },
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true
+    }
   });
 
-  win.loadFile(path.join(__dirname, "src/index.html"));
-  win.webContents.openDevTools({ mode: "detach" });
+  win.loadFile(path.join(__dirname, "index.html"));
 }
 
 app.whenReady().then(() => {

@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json && cpy \"src/index.html\" dist --flat && cpy \"src/preload.cjs\" dist --flat && cpy \"src/styles/**/*\" dist/styles && cpy \"src/assets/**/*\" dist/assets",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "pnpm run clean && tsc -p tsconfig.json && cpy \"src/index.html\" dist --flat && cpy \"src/preload.cjs\" dist --flat && cpy \"src/styles/**/*\" dist/styles && cpy \"src/assets/**/*\" dist/assets",
     "dev": "pnpm run build && electron ."
   },
   "dependencies": {

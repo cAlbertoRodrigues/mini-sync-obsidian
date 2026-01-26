@@ -1,5 +1,5 @@
-import { el } from "../utils/dom";
-import type { VaultItem } from "../onboarding";
+import { el } from "../utils/dom.js";
+import type { VaultItem } from "../onboarding.js";
 
 type Props = {
   vault: VaultItem;

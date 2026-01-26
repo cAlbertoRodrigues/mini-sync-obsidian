@@ -2,7 +2,6 @@ import { el } from "./utils/dom.js";
 import { renderVaultList } from "./views/vault-list-view.js";
 import { renderVaultSetupView } from "./views/vault-setup-view.js";
 
-
 export type VaultProvider = "local" | "google-drive";
 
 export type VaultItem = {
@@ -13,22 +12,22 @@ export type VaultItem = {
   // local
   localPath?: string;
 
-  // remoto
-  remoteLabel?: string; // ex: "GoogleDrive", "GitHub", "S3"
-  remotePath?: string; // ex: "/Apps/MiniSync/vaultA"
+  // remote (ex.: google drive)
+  remoteLabel?: string;
+  remotePath?: string;
 };
 
 type ScreenKind = "home" | "setup";
 
 export function mountOnboarding(root: HTMLElement) {
-  // mock inicial (depois você troca pela leitura real do disco/config)
+  // Lista estática por enquanto (você troca depois por dados reais)
   const vaults: VaultItem[] = [
     { id: "a", name: "Vault A", provider: "local", localPath: "C:\\Ambiente" },
     {
       id: "b",
       name: "Vault B",
       provider: "google-drive",
-      remoteLabel: "GoogleDrive",
+      remoteLabel: "Google Drive",
       remotePath: "/MiniSync/VaultB",
     },
   ];
@@ -55,21 +54,14 @@ export function mountOnboarding(root: HTMLElement) {
   }
 
   function render() {
-    // sidebar sempre existe
+    // (1) Sidebar sempre renderizada
     sidebar.replaceChildren(
       ...renderVaultList({
         vaults,
         selectedVaultId,
         onSelectVault: (id) => goSetup(id),
-
-        onAddVault: () => {
-          // depois liga no dialog nativo via preload (openDirectory)
-          console.log("Add vault");
-        },
-
-        onOpenSettings: () => {
-          console.log("Open settings");
-        },
+        onAddVault: () => console.log("Add vault (TODO)"),
+        onOpenSettings: () => console.log("Open settings (TODO)"),
       })
     );
 
@@ -80,14 +72,13 @@ export function mountOnboarding(root: HTMLElement) {
     }
 
     // SETUP
-    const vaultId = undefinedSafeSelected(selectedVaultId);
+    const vaultId = requireSelected(selectedVaultId);
     const vault = vaults.find((v) => v.id === vaultId);
 
     if (!vault) {
-      // se der ruim (vault apagado etc), volta pra home
-      main.replaceChildren(renderHomeMain());
       screenKind = "home";
       selectedVaultId = vaults[0]?.id ?? null;
+      main.replaceChildren(renderHomeMain());
       return;
     }
 
@@ -95,42 +86,97 @@ export function mountOnboarding(root: HTMLElement) {
       renderVaultSetupView({
         vault,
         onBack: () => goHome(),
-        onContinue: () => {
-          // aqui será: “aplicar config + abrir Obsidian”
-          console.log("Continuar -> abrir Obsidian com config", vault);
-        },
+        onContinue: () => console.log("Continue (TODO)", vault),
       })
     );
   }
 
+  // (2) + (3)
+  function renderHomeMain() {
+    const page = el("div", { className: "ms-home" });
+
+    // (2) Brand central: ícone + nome
+    const brand = el("div", { className: "ms-brand" });
+
+    const icon = el("img", {
+      className: "ms-brand-logo",
+      src: "./assets/images/mini-sync-logo.png",
+      alt: "Mini Sync",
+    });
+
+    const name = el("div", {
+      className: "ms-brand-name",
+      textContent: "Mini Sync",
+    });
+
+    brand.append(icon, name);
+
+    // (3) Cards padrão Obsidian (texto à esquerda + botão à direita)
+    const actions = el("div", { className: "ms-actions" });
+
+    actions.append(
+      actionCard({
+        title: "Create new vault",
+        subtitle: "Create a new Obsidian vault under a folder.",
+        buttonLabel: "Create",
+        kind: "primary",
+        onClick: () => console.log("Create new vault"),
+      }),
+      actionCard({
+        title: "Open folder as vault",
+        subtitle: "Choose an existing folder of Markdown files.",
+        buttonLabel: "Open",
+        kind: "default",
+        onClick: () => console.log("Open folder"),
+      }),
+      actionCard({
+        title: "Open vault from Mini Sync",
+        subtitle: "Set up a synced vault with an existing remote vault.",
+        buttonLabel: "Setup",
+        kind: "default",
+        onClick: () => console.log("Setup remote"),
+      })
+    );
+
+    page.append(brand, actions);
+    return page;
+  }
+
   render();
+
+  function requireSelected(id: string | null): string {
+    if (!id) throw new Error("Mini Sync: selectedVaultId é null");
+    return id;
+  }
 }
 
-function renderHomeMain(): HTMLElement {
-  const wrap = el("div", { className: "ms-center" });
+type ActionKind = "primary" | "default";
 
-  const icon = el("img", {
-    className: "ms-logo",
-    // ajuste conforme seu path real (ex: /assets/.. ou ../assets/..)
-    src: "./assets/mini-sync-icon-green-keep-border.png",
-    alt: "Mini Sync",
+function actionCard(opts: {
+  title: string;
+  subtitle: string;
+  buttonLabel: string;
+  kind: ActionKind;
+  onClick: () => void;
+}) {
+  const row = el("div", { className: "ms-action" });
+
+  const text = el("div", { className: "ms-action-text" });
+  const t = el("div", { className: "ms-action-title", textContent: opts.title });
+  const s = el("div", {
+    className: "ms-action-subtitle",
+    textContent: opts.subtitle,
   });
+  text.append(t, s);
 
-  const title = el("h1", { className: "ms-title", textContent: "Mini Sync" });
-  const subtitle = el("p", {
-    className: "ms-subtitle",
-    textContent: "Sincronize seus vaults com segurança antes de abrir o Obsidian.",
+  const btn = el("button", {
+    className: `ms-btn ${
+      opts.kind === "primary" ? "ms-btn--primary" : "ms-btn--default"
+    }`,
+    textContent: opts.buttonLabel,
   });
+  btn.addEventListener("click", opts.onClick);
 
-  wrap.append(icon, title, subtitle);
-  return wrap;
-}
-
-/**
- * Garante que o selectedVaultId existe (ou joga erro claro no dev).
- * Evita TS ficar te infernizando com null em todo lugar.
- */
-function undefinedSafeSelected(id: string | null): string {
-  if (!id) throw new Error("Mini Sync: selectedVaultId é null");
-  return id;
+  row.append(text, btn);
+  return row;
 }
