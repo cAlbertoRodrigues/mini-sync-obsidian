@@ -6,14 +6,23 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+
     "dev:sync-remote": "tsx packages/core-application/src/dev/sync-remote-folder.ts",
     "dev:sync-drive": "tsx packages/core-application/src/dev/sync-drive.ts",
     "dev:watch": "tsx packages/core-application/src/dev/watch-vault.ts",
+
     "build": "pnpm -r run build",
+    "build:core": "pnpm --filter @mini-sync/core-domain run build && pnpm --filter @mini-sync/core-application run build",
+    "build:desktop": "pnpm --filter @mini-sync/desktop run build",
+    "build:all": "pnpm run build:core && pnpm run build:desktop",
+
+    "check:workspace": "node scripts/check-workspace-names.mjs",
+
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier . --write .",
     "format:check": "prettier . --check .",
+
     "dev": "pnpm -r run dev"
   },
   "keywords": [],
