@@ -11,6 +11,11 @@ module.exports = [
       '**/out/**',
       '**/*.d.ts',
 
+      // ✅ Ignorar arquivos que são CommonJS/tooling/dev scripts
+      'apps/desktop/src/preload.cjs',
+      'packages/core-application/src/dev/**',
+      'scripts/check-workspace-names.mjs',
+
       // Ignorar o próprio arquivo de configuração do ESLint
       'eslint.config.cjs',
       'eslint.config.js',

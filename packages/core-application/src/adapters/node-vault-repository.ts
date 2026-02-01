@@ -4,20 +4,15 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 import type { VaultRepository } from "../ports/vault-repository";
-import type { Snapshot, ChangeSet, FileRecord } from "@mini-sync/core-domain";
-
+import type { Snapshot, ChangeSet, FileRecord, VaultId } from "@mini-sync/core-domain";
 
 export class NodeVaultRepository implements VaultRepository {
-
-  private async collectFiles(
-    root: string,
-    current: string = ""
-  ): Promise<string[]> {
+  private async collectFiles(root: string, current: string = ""): Promise<string[]> {
     const dir = path.join(root, current);
 
-    let entries: Dirent[]
+    let entries: Dirent[];
     try {
-      entries = (await fs.readdir(dir, { withFileTypes: true })) as Dirent[];
+      entries = await fs.readdir(dir, { withFileTypes: true });
     } catch {
       return [];
     }
@@ -60,8 +55,8 @@ export class NodeVaultRepository implements VaultRepository {
     });
   }
 
-  async generateSnapshot(vaultId: string): Promise<Snapshot> {
-    const vaultRoot = path.resolve(vaultId);
+  async generateSnapshot(vaultId: VaultId): Promise<Snapshot> {
+    const vaultRoot = path.resolve(String(vaultId));
 
     const relativeFiles = await this.collectFiles(vaultRoot);
     const records: FileRecord[] = [];
@@ -88,7 +83,7 @@ export class NodeVaultRepository implements VaultRepository {
 
     const snapshot: Snapshot = {
       id,
-      vaultId: vaultId as any,
+      vaultId,
       createdAtMs: Date.now(),
       files: records,
     };
@@ -96,8 +91,8 @@ export class NodeVaultRepository implements VaultRepository {
     return snapshot;
   }
 
-  async applyChangeSet(vaultId: string, changeSet: ChangeSet): Promise<void> {
-    const vaultRoot = path.resolve(vaultId);
+  async applyChangeSet(vaultId: VaultId, changeSet: ChangeSet): Promise<void> {
+    const vaultRoot = path.resolve(String(vaultId));
 
     // deletions first
     for (const del of changeSet.deleted) {

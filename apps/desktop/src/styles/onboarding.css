@@ -18,7 +18,9 @@ html, body {
   background: var(--bg);
   color: var(--text);
   font-family: "Inter", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+  overflow: hidden;
 }
+
 
 /* ---------- LAYOUT ---------- */
 
@@ -37,6 +39,7 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  overflow: hidden;
 }
 
 .ms-sidebar-header{
@@ -73,6 +76,16 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-width: none;
+}
+
+.ms-vault-list::-webkit-scrollbar{
+  width: 0;
+  height: 0;
 }
 
 .ms-vault-item{
@@ -83,7 +96,15 @@ html, body {
   padding: 10px;
   border-radius: 10px;
   cursor: pointer;
+
+  /* ✅ alinhamento do badge + textos */
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: start;
 }
+
 .ms-vault-item:hover{
   background: rgba(255,255,255,.04);
   border-color: var(--border);
@@ -91,6 +112,23 @@ html, body {
 .ms-vault-item.is-active{
   background: rgba(255,255,255,.06);
   border-color: rgba(124,218,88,.25);
+}
+
+.ms-vault-item .ms-status{
+  grid-column: 1;
+  grid-row: 1;
+  margin-top: 4px;
+}
+
+.ms-vault-item .ms-vault-name{
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.ms-vault-item .ms-vault-meta{
+  grid-column: 2;
+  grid-row: 2;
+  margin-top: 0;
 }
 
 .ms-vault-name{
@@ -255,14 +293,22 @@ html, body {
 }
 
 .ms-field{
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 110px 1fr; /* label fixa + input flex */
+  align-items: center;
   gap: 12px;
   padding: 10px;
   background: rgba(255,255,255,.03);
   border: 1px solid var(--border);
   border-radius: 12px;
 }
+
+.ms-setup{
+  padding: 26px 28px;
+  max-width: 720px;
+  margin: 0 auto; /* ✅ centraliza */
+}
+
 .ms-field-label{
   color: var(--muted);
   font-size: 12px;
@@ -274,7 +320,8 @@ html, body {
 .ms-setup-footer{
   margin-top: 18px;
   display: flex;
-  justify-content: flex-start;
+  gap: 10px;
+  align-items: center;
 }
 
 .ms-primary{
@@ -287,5 +334,60 @@ html, body {
   cursor: pointer;
 }
 .ms-primary:hover{
+  filter: brightness(1.03);
+}
+
+/* ---------- STATUS BADGE ---------- */
+
+.ms-status {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+  margin-right: 8px;
+  flex: 0 0 auto;
+}
+
+.ms-status--idle {
+  background: #6b7280; /* cinza */
+}
+
+.ms-status--syncing {
+  background: #3b82f6; /* azul */
+}
+
+.ms-status--ok {
+  background: #22c55e; /* verde */
+}
+
+.ms-status--error {
+  background: #ef4444; /* vermelho */
+}
+
+.ms-input{
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #1f1f1f;
+  color: var(--text);
+  padding: 8px 10px;
+  outline: none;
+}
+
+.ms-input:focus{
+  border-color: rgba(124,218,88,.35);
+  box-shadow: 0 0 0 3px rgba(124,218,88,.10);
+}
+
+.ms-danger{
+  border: 1px solid rgba(0,0,0,.25);
+  background: linear-gradient(180deg, #ff6b6b, #ef4444);
+  color: #120707;
+  font-weight: 800;
+  padding: 10px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.ms-danger:hover{
   filter: brightness(1.03);
 }

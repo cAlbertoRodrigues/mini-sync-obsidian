@@ -39,31 +39,48 @@ export class NodeSnapshotStore implements SnapshotStore {
     await fs.writeFile(file, JSON.stringify(snapshot, null, 2), "utf-8");
   }
 
-  async getLastSyncedSnapshotId(vaultId: VaultId, deviceId: DeviceId): Promise<SnapshotId | null> {
+  async getLastSyncedSnapshotId(
+    vaultId: VaultId,
+    deviceId: DeviceId
+  ): Promise<SnapshotId | null> {
     const vaultRoot = this.resolveVaultRoot(vaultId);
     const file = this.lastSyncedFile(vaultRoot);
+
     try {
       const content = await fs.readFile(file, "utf-8");
-      const data = JSON.parse(content) as Record<DeviceId, SnapshotId>;
-      const val = data[String(deviceId) as any];
+
+      // No arquivo JSON as chaves sempre são strings.
+      const data = JSON.parse(content) as Record<string, SnapshotId>;
+
+      const key = String(deviceId);
+      const val = data[key];
+
       return val ?? null;
     } catch {
       return null;
     }
   }
 
-  async markAsLastSynced(vaultId: VaultId, deviceId: DeviceId, snapshotId: SnapshotId): Promise<void> {
+  async markAsLastSynced(
+    vaultId: VaultId,
+    deviceId: DeviceId,
+    snapshotId: SnapshotId
+  ): Promise<void> {
     const vaultRoot = this.resolveVaultRoot(vaultId);
     const file = this.lastSyncedFile(vaultRoot);
-    let data: Record<DeviceId, SnapshotId> = {};
+
+    let data: Record<string, SnapshotId> = {};
     try {
       const content = await fs.readFile(file, "utf-8");
-      data = JSON.parse(content) as Record<DeviceId, SnapshotId>;
+      data = JSON.parse(content) as Record<string, SnapshotId>;
     } catch {
       // file missing, start new registry
       data = {};
     }
-    data[String(deviceId) as any] = snapshotId;
+
+    const key = String(deviceId);
+    data[key] = snapshotId;
+
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, JSON.stringify(data, null, 2), "utf-8");
   }

@@ -72,9 +72,6 @@ export async function resolveKeepLocal(params: {
     // impõe o conteúdo local no remoto
     await provider.pushHistoryEvents([event]);
 
-    // atualiza estado: synced + remote viram o local
-    const prev = await stateStore.get(vaultRootAbs, rel);
-
   await stateStore.upsert(vaultRootAbs, {
   path: rel,
   lastLocalHash: localHash,      // ✅ sempre o hash local atual

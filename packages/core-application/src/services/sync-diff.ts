@@ -7,7 +7,7 @@ import type { FileSyncState } from "../value-objects/file-sync-state";
  * - { algorithm, value }
  * - undefined
  */
-type HashLike = string | { algorithm?: string; value?: string } | undefined;
+type HashLike = unknown;
 
 export type FileStatus =
   | "unchanged"
@@ -34,8 +34,14 @@ export type FileComparison = {
 
 function normalizeHash(h: HashLike): string | undefined {
   if (!h) return undefined;
+
   if (typeof h === "string") return h;
-  if (typeof h === "object" && typeof h.value === "string") return h.value;
+
+  if (typeof h === "object" && h !== null && "value" in h) {
+    const v = (h as { value?: unknown }).value;
+    if (typeof v === "string") return v;
+  }
+
   return undefined;
 }
 
@@ -45,8 +51,9 @@ function differsFromBase(current?: string, base?: string): boolean {
   return current !== base;
 }
 
-function isFileSyncState(x: any): x is FileSyncState {
-  return !!x && typeof x === "object" && typeof x.path === "string";
+function isFileSyncState(x: unknown): x is FileSyncState {
+  if (!x || typeof x !== "object") return false;
+  return "path" in x && typeof (x as { path?: unknown }).path === "string";
 }
 
 /**
@@ -56,9 +63,7 @@ function isFileSyncState(x: any): x is FileSyncState {
  * - Record<string, FileSyncState>
  * - { files: Record<string, FileSyncState> }
  */
-function normalizeStatesInput(
-  states: any
-): FileSyncState[] {
+function normalizeStatesInput(states: unknown): FileSyncState[] {
   if (!states) return [];
 
   // array
@@ -66,25 +71,26 @@ function normalizeStatesInput(
     return states.filter(isFileSyncState);
   }
 
+  if (typeof states !== "object") return [];
+
   // { files: {...} }
-  if (typeof states === "object" && states.files && typeof states.files === "object") {
-    return Object.values(states.files).filter(isFileSyncState);
+  if ("files" in states) {
+    const files = (states as { files?: unknown }).files;
+    if (files && typeof files === "object") {
+      return Object.values(files as Record<string, unknown>).filter(isFileSyncState);
+    }
   }
 
   // Record<string, FileSyncState>
-  if (typeof states === "object") {
-    return Object.values(states).filter(isFileSyncState);
-  }
-
-  return [];
+  return Object.values(states as Record<string, unknown>).filter(isFileSyncState);
 }
 
 /* ---------------- conflict detection ---------------- */
 
 export function detectConflictFromState(state: FileSyncState): Conflict | null {
-  const local = normalizeHash(state.lastLocalHash as any);
-  const remote = normalizeHash(state.lastRemoteHash as any);
-  const base = normalizeHash(state.lastSyncedHash as any);
+  const local = normalizeHash(state.lastLocalHash);
+  const remote = normalizeHash(state.lastRemoteHash);
+  const base = normalizeHash(state.lastSyncedHash);
 
   const localExists = !!local;
   const remoteExists = !!remote;
@@ -137,9 +143,9 @@ export function detectConflictFromState(state: FileSyncState): Conflict | null {
 /* ---------------- comparison ---------------- */
 
 export function compareFileState(state: FileSyncState): FileComparison {
-  const local = normalizeHash(state.lastLocalHash as any);
-  const remote = normalizeHash(state.lastRemoteHash as any);
-  const base = normalizeHash(state.lastSyncedHash as any);
+  const local = normalizeHash(state.lastLocalHash);
+  const remote = normalizeHash(state.lastRemoteHash);
+  const base = normalizeHash(state.lastSyncedHash);
 
   const conflict = detectConflictFromState(state);
   if (conflict) {
@@ -228,7 +234,7 @@ export function compareFileState(state: FileSyncState): FileComparison {
   };
 }
 
-export function compareAllStates(states: any) {
+export function compareAllStates(states: unknown) {
   const list = normalizeStatesInput(states);
 
   const comparisons = list

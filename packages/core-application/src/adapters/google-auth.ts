@@ -27,14 +27,32 @@ async function fileExists(p: string) {
   }
 }
 
-// normaliza null -> undefined
-function normalizeTokens(t: any): GoogleTokens {
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
+function getString(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
+}
+
+function getNumber(v: unknown): number | undefined {
+  return typeof v === "number" ? v : undefined;
+}
+
+function getStringArray(v: unknown): string[] | undefined {
+  return Array.isArray(v) && v.every((x) => typeof x === "string") ? v : undefined;
+}
+
+// normaliza null -> undefined (entrada pode ser qualquer coisa)
+function normalizeTokens(t: unknown): GoogleTokens {
+  if (!isRecord(t)) return {};
+
   return {
-    access_token: t?.access_token ?? undefined,
-    refresh_token: t?.refresh_token ?? undefined,
-    scope: t?.scope ?? undefined,
-    token_type: t?.token_type ?? undefined,
-    expiry_date: t?.expiry_date ?? undefined,
+    access_token: getString(t["access_token"]),
+    refresh_token: getString(t["refresh_token"]),
+    scope: getString(t["scope"]),
+    token_type: getString(t["token_type"]),
+    expiry_date: getNumber(t["expiry_date"]),
   };
 }
 
@@ -49,12 +67,16 @@ export class GoogleAuth {
 
   async getAuthorizedClient(): Promise<OAuth2Client> {
     const credsRaw = await fs.readFile(this.credentialsPath, "utf-8");
-    const creds = JSON.parse(credsRaw);
+    const credsUnknown: unknown = JSON.parse(credsRaw);
 
-    const installed = creds.installed ?? creds.web ?? {};
-    const client_id = installed.client_id;
-    const client_secret = installed.client_secret;
-    const redirect_uris: string[] | undefined = installed.redirect_uris;
+    const creds = isRecord(credsUnknown) ? credsUnknown : {};
+    const installed = (isRecord(creds["installed"]) && creds["installed"]) ||
+      (isRecord(creds["web"]) && creds["web"]) ||
+      {};
+
+    const client_id = getString((installed as Record<string, unknown>)["client_id"]);
+    const client_secret = getString((installed as Record<string, unknown>)["client_secret"]);
+    const redirect_uris = getStringArray((installed as Record<string, unknown>)["redirect_uris"]);
 
     if (!client_id || !client_secret) {
       throw new Error(
@@ -90,13 +112,19 @@ export class GoogleAuth {
       return oAuth2Client;
     }
 
-    // 2) primeiro login (abre navegador + redirect local)
-    const authedClient = await authenticate({
-      keyfilePath: this.credentialsPath,
-      scopes: SCOPES,
-      // força refresh_token e tela de consentimento
-      ...({ accessType: "offline", prompt: "consent" } as any),
-    });
+    type AuthenticateOptions = Parameters<typeof authenticate>[0];
+
+    const authedClient = await authenticate(
+      {
+        keyfilePath: this.credentialsPath,
+        scopes: SCOPES,
+
+        // força refresh_token e tela de consentimento (runtime ok, types não conhecem)
+        accessType: "offline",
+        prompt: "consent",
+      } as unknown as AuthenticateOptions
+    );
+
 
     const authed = authedClient as unknown as OAuth2Client;
 

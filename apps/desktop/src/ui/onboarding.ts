@@ -1,38 +1,36 @@
 import { el } from "./utils/dom.js";
 import { renderVaultList } from "./views/vault-list-view.js";
 import { renderVaultSetupView } from "./views/vault-setup-view.js";
-
-export type VaultProvider = "local" | "google-drive";
-
-export type VaultItem = {
-  id: string;
-  name: string;
-  provider: VaultProvider;
-
-  // local
-  localPath?: string;
-
-  // remote (ex.: google drive)
-  remoteLabel?: string;
-  remotePath?: string;
-};
+import {
+  loadVaults,
+  upsertVault,
+  createId,
+  deleteVault,
+  type VaultItem,
+} from "./state/vaults-store.js";
 
 type ScreenKind = "home" | "setup";
 
 export function mountOnboarding(root: HTMLElement) {
-  // Lista estática por enquanto (você troca depois por dados reais)
-  const vaults: VaultItem[] = [
-    { id: "a", name: "Vault A", provider: "local", localPath: "C:\\Ambiente" },
-    {
-      id: "b",
-      name: "Vault B",
-      provider: "google-drive",
-      remoteLabel: "Google Drive",
-      remotePath: "/MiniSync/VaultB",
-    },
-  ];
-
   let screenKind: ScreenKind = "home";
+
+  // estado vindo do storage
+  let vaults: VaultItem[] = loadVaults();
+
+  // bootstrap: cria um vault inicial se estiver vazio
+  if (vaults.length === 0) {
+    const first: VaultItem = {
+      id: createId(),
+      name: "Meu Vault",
+      provider: "local",
+      localPath: "",
+      status: "idle",
+      statusText: "Idle",
+    };
+    upsertVault(first);
+    vaults = loadVaults();
+  }
+
   let selectedVaultId: string | null = vaults[0]?.id ?? null;
 
   const shell = el("div", { className: "ms-shell" });
@@ -41,6 +39,14 @@ export function mountOnboarding(root: HTMLElement) {
 
   shell.append(sidebar, main);
   root.replaceChildren(shell);
+
+  function refreshVaults() {
+    vaults = loadVaults();
+    if (!selectedVaultId && vaults[0]) selectedVaultId = vaults[0].id;
+    if (selectedVaultId && !vaults.some((v) => v.id === selectedVaultId)) {
+      selectedVaultId = vaults[0]?.id ?? null;
+    }
+  }
 
   function goHome() {
     screenKind = "home";
@@ -53,14 +59,30 @@ export function mountOnboarding(root: HTMLElement) {
     render();
   }
 
+  function addVault() {
+    const v: VaultItem = {
+      id: createId(),
+      name: "Novo Vault",
+      provider: "local",
+      localPath: "",
+      status: "idle",
+      statusText: "Idle",
+    };
+    upsertVault(v);
+    refreshVaults();
+    goSetup(v.id);
+  }
+
   function render() {
+    refreshVaults();
+
     // (1) Sidebar sempre renderizada
     sidebar.replaceChildren(
       ...renderVaultList({
         vaults,
         selectedVaultId,
         onSelectVault: (id) => goSetup(id),
-        onAddVault: () => console.log("Add vault (TODO)"),
+        onAddVault: () => addVault(),
         onOpenSettings: () => console.log("Open settings (TODO)"),
       })
     );
@@ -86,10 +108,19 @@ export function mountOnboarding(root: HTMLElement) {
       renderVaultSetupView({
         vault,
         onBack: () => goHome(),
-        onContinue: () => console.log("Continue (TODO)", vault),
+        onSave: (updatedVault: VaultItem) => {
+          upsertVault(updatedVault);
+          refreshVaults();
+          goHome();
+        },
+        onDelete: (vaultIdToDelete: string) => {
+          deleteVault(vaultIdToDelete);
+          refreshVaults();
+          goHome();
+        },
       })
     );
-  }
+  } // ✅ FECHA render()
 
   // (2) + (3)
   function renderHomeMain() {
@@ -120,21 +151,30 @@ export function mountOnboarding(root: HTMLElement) {
         subtitle: "Create a new Obsidian vault under a folder.",
         buttonLabel: "Create",
         kind: "primary",
-        onClick: () => console.log("Create new vault"),
+        onClick: () => {
+          // por enquanto, cria um vault na lista e abre setup
+          addVault();
+        },
       }),
       actionCard({
         title: "Open folder as vault",
         subtitle: "Choose an existing folder of Markdown files.",
         buttonLabel: "Open",
         kind: "default",
-        onClick: () => console.log("Open folder"),
+        onClick: () => {
+          // MVP: ainda não implementado (vai virar um card futuro)
+          console.log("Open folder (TODO)");
+        },
       }),
       actionCard({
         title: "Open vault from Mini Sync",
         subtitle: "Set up a synced vault with an existing remote vault.",
         buttonLabel: "Setup",
         kind: "default",
-        onClick: () => console.log("Setup remote"),
+        onClick: () => {
+          // MVP: cria vault e deixa o user escolher provider e preencher dados
+          addVault();
+        },
       })
     );
 
@@ -170,9 +210,7 @@ function actionCard(opts: {
   text.append(t, s);
 
   const btn = el("button", {
-    className: `ms-btn ${
-      opts.kind === "primary" ? "ms-btn--primary" : "ms-btn--default"
-    }`,
+    className: `ms-btn ${opts.kind === "primary" ? "ms-btn--primary" : "ms-btn--default"}`,
     textContent: opts.buttonLabel,
   });
   btn.addEventListener("click", opts.onClick);

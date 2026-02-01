@@ -135,16 +135,27 @@ export async function getOrCreateTextFile(
 /**
  * Baixa conteúdo como texto (alt=media).
  */
+/**
+ * Baixa conteúdo como texto (alt=media).
+ */
 export async function downloadText(
   auth: OAuth2Client,
   fileId: string
 ): Promise<string> {
-  const res = await drive(auth).files.get(
+  // Tipagem mínima (e estável) só para esse uso com alt=media.
+  type FilesGet = (
+    params: { fileId: string; alt?: "media" },
+    options?: { responseType?: "text" }
+  ) => Promise<{ data: unknown }>;
+
+  const files = drive(auth).files as unknown as { get: FilesGet };
+
+  const res = await files.get(
     { fileId, alt: "media" },
-    { responseType: "text" as any }
+    { responseType: "text" }
   );
 
-  return (res.data as any) ?? "";
+  return typeof res.data === "string" ? res.data : "";
 }
 
 /**
@@ -194,9 +205,7 @@ export async function appendJsonl(
 /**
  * Pasta raiz do app (mini-sync-obsidian) no "Meu Drive".
  */
-export async function ensureAppRootFolder(
-  auth: OAuth2Client
-): Promise<string> {
+export async function ensureAppRootFolder(auth: OAuth2Client): Promise<string> {
   const res = await drive(auth).files.list({
     q: [
       "trashed = false",

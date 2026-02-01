@@ -6,8 +6,6 @@ import type { FileHasher, FileHash } from "../ports/file-hasher";
 import type { HistoryRepository } from "../ports/history-repository";
 
 import type { HistoryEvent } from "../value-objects/history-event";
-import type { FileMetadata } from "../value-objects/file-metadata";
-import { createHistoryEvent } from "../value-objects/history-event";
 
 import { NodeSyncStateStore } from "../adapters/node-sync-state-store";
 import { setApplyLock, clearApplyLock } from "../adapters/apply-lock";
