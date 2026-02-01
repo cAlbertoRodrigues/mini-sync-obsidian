@@ -391,3 +391,25 @@ html, body {
 .ms-danger:hover{
   filter: brightness(1.03);
 }
+
+.ms-logs {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.ms-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.ms-log-entry {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.ms-log-empty {
+  font-size: 12px;
+  color: var(--muted);
+}

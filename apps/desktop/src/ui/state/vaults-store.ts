@@ -1,88 +1,38 @@
+// apps/desktop/src/ui/state/vaults-store.ts
 import type { VaultProviderId } from "../providers/providers.js";
 
 export type VaultSyncStatus = "idle" | "syncing" | "ok" | "error";
+
+export type VaultLogEntry = {
+  ts: number;
+  message: string;
+};
 
 export type VaultItem = {
   id: string;
   name: string;
   provider: VaultProviderId;
 
-  // local
   localPath?: string;
 
-  // remote (ex.: google drive)
   remoteLabel?: string;
   remotePath?: string;
 
-  // status UI
   status?: VaultSyncStatus;
   statusText?: string;
+
+  logs?: VaultLogEntry[];
 };
 
 const KEY = "miniSync.vaults.v1";
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null;
-}
-
-function isVaultProviderId(v: unknown): v is VaultProviderId {
-  return v === "local" || v === "google-drive";
-}
-
-function isVaultSyncStatus(v: unknown): v is VaultSyncStatus {
-  return v === "idle" || v === "syncing" || v === "ok" || v === "error";
-}
-
-function normalizeOne(x: unknown): VaultItem | null {
-  if (!isRecord(x)) return null;
-
-  const id = typeof x.id === "string" ? x.id : null;
-  const name = typeof x.name === "string" ? x.name : null;
-  const provider = isVaultProviderId(x.provider) ? x.provider : null;
-
-  if (!id || !name || !provider) return null;
-
-  const localPath = typeof x.localPath === "string" ? x.localPath : undefined;
-  const remoteLabel = typeof x.remoteLabel === "string" ? x.remoteLabel : undefined;
-  const remotePath = typeof x.remotePath === "string" ? x.remotePath : undefined;
-
-  const status: VaultSyncStatus = isVaultSyncStatus(x.status) ? x.status : "idle";
-  const statusText =
-    typeof x.statusText === "string" ? x.statusText : statusLabel(status);
-
+function normalizeVault(v: VaultItem): VaultItem {
   return {
-    id,
-    name,
-    provider,
-    localPath,
-    remoteLabel,
-    remotePath,
-    status,
-    statusText,
+    ...v,
+    status: v.status ?? "idle",
+    statusText: v.statusText ?? "Idle",
+    logs: Array.isArray(v.logs) ? v.logs : [],
   };
-}
-
-function normalizeVaults(list: unknown): VaultItem[] {
-  if (!Array.isArray(list)) return [];
-  const out: VaultItem[] = [];
-  for (const item of list) {
-    const v = normalizeOne(item);
-    if (v) out.push(v);
-  }
-  return out;
-}
-
-function statusLabel(s: VaultSyncStatus): string {
-  switch (s) {
-    case "idle":
-      return "Idle";
-    case "syncing":
-      return "Syncing...";
-    case "ok":
-      return "Up to date";
-    case "error":
-      return "Error";
-  }
 }
 
 export function loadVaults(): VaultItem[] {
@@ -90,7 +40,8 @@ export function loadVaults(): VaultItem[] {
     const raw = localStorage.getItem(KEY);
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
-    return normalizeVaults(parsed);
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as VaultItem[]).map(normalizeVault);
   } catch {
     return [];
   }
@@ -101,27 +52,46 @@ export function saveVaults(vaults: VaultItem[]) {
 }
 
 export function upsertVault(vault: VaultItem) {
-  // garante defaults de status antes de salvar
-  const normalized: VaultItem = {
-    ...vault,
-    status: vault.status ?? "idle",
-    statusText: vault.statusText ?? statusLabel(vault.status ?? "idle"),
-  };
-
   const list = loadVaults();
-  const idx = list.findIndex((v) => v.id === normalized.id);
+  const idx = list.findIndex((v) => v.id === vault.id);
 
-  if (idx >= 0) list[idx] = normalized;
-  else list.push(normalized);
+  const next = normalizeVault(vault);
+  if (idx >= 0) list[idx] = next;
+  else list.push(next);
 
   saveVaults(list);
-}
-
-export function createId(): string {
-  return Math.random().toString(36).slice(2, 10);
 }
 
 export function deleteVault(vaultId: string) {
   const list = loadVaults().filter((v) => v.id !== vaultId);
   saveVaults(list);
+}
+
+export function appendVaultLog(vaultId: string, message: string) {
+  const list = loadVaults();
+  const idx = list.findIndex((v) => v.id === vaultId);
+  if (idx < 0) return;
+
+  const v = normalizeVault(list[idx]);
+  const entry: VaultLogEntry = { ts: Date.now(), message };
+
+  v.logs = [...(v.logs ?? []), entry];
+  list[idx] = v;
+  saveVaults(list);
+}
+
+export function setVaultStatus(vaultId: string, status: VaultSyncStatus, statusText?: string) {
+  const list = loadVaults();
+  const idx = list.findIndex((v) => v.id === vaultId);
+  if (idx < 0) return;
+
+  const v = normalizeVault(list[idx]);
+  v.status = status;
+  v.statusText = statusText ?? v.statusText ?? "Idle";
+  list[idx] = v;
+  saveVaults(list);
+}
+
+export function createId(): string {
+  return Math.random().toString(36).slice(2, 10);
 }

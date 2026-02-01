@@ -6,14 +6,25 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 function createWindow() {
+  const width = 813;
+  const height = 654;
+
   const win = new BrowserWindow({
-    width: 813,
-    height: 654,
+    width,
+    height,
+
+    resizable: false,
+    maximizable: false,
+    fullscreenable: false,
+
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
-      contextIsolation: true
-    }
+      contextIsolation: true,
+    },
   });
+
+  win.setMinimumSize(width, height);
+  win.setMaximumSize(width, height);
 
   win.loadFile(path.join(__dirname, "index.html"));
 }

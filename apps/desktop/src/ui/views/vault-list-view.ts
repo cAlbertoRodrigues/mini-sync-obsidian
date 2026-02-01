@@ -1,3 +1,4 @@
+// apps/desktop/src/ui/views/vault-list-view.ts
 import { el } from "../utils/dom.js";
 import type { VaultItem } from "../state/vaults-store.js";
 
@@ -8,6 +9,20 @@ type Props = {
   onAddVault: () => void;
   onOpenSettings: () => void;
 };
+
+function statusClass(status?: VaultItem["status"]) {
+  switch (status) {
+    case "syncing":
+      return "ms-status ms-status--syncing";
+    case "ok":
+      return "ms-status ms-status--ok";
+    case "error":
+      return "ms-status ms-status--error";
+    case "idle":
+    default:
+      return "ms-status ms-status--idle";
+  }
+}
 
 export function renderVaultList(props: Props): HTMLElement[] {
   const header = el("div", { className: "ms-sidebar-header" });
@@ -33,8 +48,14 @@ export function renderVaultList(props: Props): HTMLElement[] {
       className: "ms-vault-item" + (props.selectedVaultId === v.id ? " is-active" : ""),
     });
 
-    const name = el("div", { className: "ms-vault-name", textContent: v.name });
+    // linha do nome + status
+    const nameRow = el("div", { className: "ms-vault-name-row" });
+    nameRow.append(
+      el("span", { className: statusClass(v.status) }),
+      el("div", { className: "ms-vault-name", textContent: v.name })
+    );
 
+    // meta
     let metaText = "";
     if (v.provider === "local") {
       metaText = `Local • ${v.localPath ?? ""}`.trim();
@@ -43,9 +64,11 @@ export function renderVaultList(props: Props): HTMLElement[] {
       metaText = `${label}${v.remotePath ? ` • ${v.remotePath}` : ""}`;
     }
 
-    const meta = el("div", { className: "ms-vault-meta", textContent: metaText });
+    // statusText pequeno (opcional)
+    const statusText = v.statusText ? ` • ${v.statusText}` : "";
+    const meta = el("div", { className: "ms-vault-meta", textContent: metaText + statusText });
 
-    row.append(name, meta);
+    row.append(nameRow, meta);
     row.addEventListener("click", () => props.onSelectVault(v.id));
     list.append(row);
   }
