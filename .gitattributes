@@ -1,0 +1,15 @@
+# Normaliza texto para LF no repositório
+* text=auto eol=lf
+
+# Windows scripts (se você tiver .cmd/.bat)
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Evita mexer em binários
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
