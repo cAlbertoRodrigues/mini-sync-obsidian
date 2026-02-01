@@ -462,3 +462,112 @@ body {
   background: #b91c1c;
   border-color: rgba(0,0,0,.25);
 }
+
+.ms-changes {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+}
+
+.ms-changes-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ms-changes-body {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+
+.ms-changes-list, .ms-changes-panel {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 12px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.ms-changes-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.ms-change-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.ms-change-row.is-active {
+  background: rgba(255,255,255,0.06);
+}
+
+.ms-change-path {
+  font-size: 13px;
+  opacity: 0.95;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ms-badge {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.12);
+  opacity: 0.9;
+}
+
+.ms-badge--danger { border-color: rgba(255,80,80,0.5); }
+.ms-badge--warn { border-color: rgba(255,200,80,0.5); }
+.ms-badge--info { border-color: rgba(80,160,255,0.5); }
+
+.ms-changes-panel {
+  padding: 12px;
+  overflow: auto;
+}
+
+.ms-change-actions {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 12px;
+  flex-wrap: wrap;
+}
+
+.ms-diff-label {
+  font-size: 12px;
+  opacity: 0.75;
+  margin-bottom: 8px;
+}
+
+.ms-diff {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.ms-diff-line {
+  padding: 2px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ms-diff-line.is-add { background: rgba(80, 255, 140, 0.10); }
+.ms-diff-line.is-del { background: rgba(255, 80, 80, 0.10); }
