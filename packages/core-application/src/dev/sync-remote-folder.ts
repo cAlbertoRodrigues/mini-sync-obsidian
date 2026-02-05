@@ -19,12 +19,12 @@ import { compareAllStates } from "../services/sync-diff";
 import { resolveKeepLocal } from "../services/keep-local";
 import { resolveKeepRemote } from "../services/keep-remote";
 
-// ✅ retry (fica no topo)
 import { withRetry } from "../application/with-retry";
 import { defaultNetworkRetryPolicy } from "../application/default-network-retry-policy";
 import { sleep } from "../infra/sleep";
 
 const retryPolicy = defaultNetworkRetryPolicy();
+
 /**
  * Converte hash para string comparável. Suporta:
  * - string
@@ -46,7 +46,7 @@ function reconcileSynced(state: Partial<FileSyncState>) {
   const rh = normalizeHash((state as any).lastRemoteHash);
 
   if (lh && rh && lh === rh) {
-    (state as any).lastSyncedHash = (state as any).lastLocalHash; // mantém o formato original (objeto/str)
+    (state as any).lastSyncedHash = (state as any).lastLocalHash;
     return;
   }
 
@@ -101,12 +101,9 @@ function isDeletedEvent(e: HistoryEvent) {
 }
 
 /**
- * Seleciona o ÚLTIMO evento local por arquivo (para atualizar lastLocalHash corretamente)
- * - modified/created: usa o hash do evento
- * - deleted: lastLocalHash = undefined
+ * Seleciona o ÚLTIMO evento por arquivo (para atualizar hashes corretamente)
  */
-function buildLatestLocalByPath(events: HistoryEvent[]): Map<string, HistoryEvent> {
-  // Como seu history é jsonl, normalmente já vem em ordem, mas vamos garantir via occurredAt
+function buildLatestByPath(events: HistoryEvent[]): Map<string, HistoryEvent> {
   const sorted = [...events].sort((a, b) => {
     const aa = new Date(a.occurredAtIso).getTime();
     const bb = new Date(b.occurredAtIso).getTime();
@@ -114,11 +111,10 @@ function buildLatestLocalByPath(events: HistoryEvent[]): Map<string, HistoryEven
   });
 
   const map = new Map<string, HistoryEvent>();
-  for (const e of sorted) {
-    map.set(e.change.path, e);
-  }
+  for (const e of sorted) map.set(e.change.path, e);
   return map;
 }
+
 async function main() {
   const localVault = process.argv[2];
   const remoteRoot = process.argv[3];
@@ -136,8 +132,13 @@ async function main() {
 
   await warnIfProbablyWrongVaultPath(vaultAbs);
 
-  const provider = new RemoteFolderSyncProvider(remoteAbs);
-  const cursorStore = new NodeRemoteCursorStore();
+  // ✅ NOVO: vaultId para estruturar MiniSync/<vaultId> no remoto
+  const vaultIdForRemote = path.basename(vaultAbs);
+
+  // ✅ NOVO: provider agora recebe (remoteRootDir, vaultId)
+  const provider = new RemoteFolderSyncProvider(remoteAbs, vaultIdForRemote);
+
+  const cursorStore = new NodeRemoteCursorStore(); // opcional: namespace no futuro
   const applier = new VaultEventApplier();
 
   const hasher = new NodeFileHasher();
@@ -167,7 +168,7 @@ async function main() {
   }
 
   /* ------------------------------------------------------------------ */
-  /* 1) Read local history (para conhecer estado local SEM depender do push) */
+  /* 1) Read local history (estado local)                                */
   /* ------------------------------------------------------------------ */
 
   const localHistoryDir = path.join(vaultAbs, ".mini-sync", "history");
@@ -182,13 +183,19 @@ async function main() {
   for (const f of files) {
     const content = await fs.readFile(path.join(localHistoryDir, f), "utf-8");
     const lines = content.split("\n").filter((l) => l.trim().length > 0);
-    for (const l of lines) allLocalEvents.push(JSON.parse(l) as HistoryEvent);
+    for (const l of lines) {
+      try {
+        allLocalEvents.push(JSON.parse(l) as HistoryEvent);
+      } catch {
+        // ignore linha inválida
+      }
+    }
   }
 
   console.log("Eventos locais encontrados:", allLocalEvents.length);
 
   // Atualiza lastLocalHash baseado no ÚLTIMO evento por arquivo
-  const latestLocalByPath = buildLatestLocalByPath(allLocalEvents);
+  const latestLocalByPath = buildLatestByPath(allLocalEvents);
   for (const [p, ev] of latestLocalByPath.entries()) {
     if (isDeletedEvent(ev)) {
       await upsertStatePatch({ path: p, lastLocalHash: undefined });
@@ -199,13 +206,12 @@ async function main() {
   }
 
   /* ------------------------------------------------------------------ */
-  /* 2) PULL FIRST (remote -> local), atualiza estado remoto e só depois decide */
+  /* 2) PULL FIRST (remote -> local)                                     */
   /* ------------------------------------------------------------------ */
 
   const cursor = await cursorStore.load(vaultAbs);
   console.log("Pull a partir do cursor:", cursor?.value ?? "null");
 
-  // ✅ RETRY NO PULL PRINCIPAL
   const { events: pulled, nextCursor } = await withRetry(
     () => provider.pullHistoryEvents(cursor),
     retryPolicy,
@@ -215,7 +221,7 @@ async function main() {
   console.log("Pulled:", pulled.length, "nextCursor:", nextCursor?.value ?? "null");
 
   // Atualiza lastRemoteHash com base no ÚLTIMO evento remoto por arquivo nesse batch
-  const latestRemoteByPath = buildLatestLocalByPath(pulled);
+  const latestRemoteByPath = buildLatestByPath(pulled);
   for (const [p, ev] of latestRemoteByPath.entries()) {
     if (isDeletedEvent(ev)) {
       await upsertStatePatch({ path: p, lastRemoteHash: undefined });
@@ -226,7 +232,7 @@ async function main() {
   }
 
   /* ------------------------------------------------------------------ */
-  /* 3) Detect conflicts BEFORE applying remote events */
+  /* 3) Detect conflicts BEFORE applying remote events                   */
   /* ------------------------------------------------------------------ */
 
   const allStatesBefore = await stateStore.loadAll(vaultAbs);
@@ -240,12 +246,12 @@ async function main() {
     synced: comparisons.filter((c) => c.status === "synced").length,
   });
 
-  // ✅ RETRY NO PULL DO "REMOTE COMPLETO" (necessário para keep-remote)
-  const { events: remoteAllNow } = await withRetry(
+  const remoteAllNowRes = await withRetry(
     () => provider.pullHistoryEvents(null),
     retryPolicy,
     sleep
   );
+  const remoteAllNow = remoteAllNowRes.events;
 
   if (conflictsBefore.length > 0) {
     console.log(
@@ -277,7 +283,7 @@ async function main() {
         await resolveKeepRemote({
           vaultRootAbs: vaultAbs,
           conflicts: [c],
-          pulledRemoteEvents: remoteAllNow,
+          pulledRemoteEvents: remoteAllNow, // ✅ aqui é ARRAY de eventos
           hasher,
           historyRepository,
           stateStore,
@@ -308,7 +314,7 @@ async function main() {
     }
 
     // Após aplicar, marca como sincronizado no state
-    const latestAppliedByPath = buildLatestLocalByPath(toApply);
+    const latestAppliedByPath = buildLatestByPath(toApply);
     for (const [p, ev] of latestAppliedByPath.entries()) {
       if (isDeletedEvent(ev)) {
         await upsertStatePatch({
@@ -331,13 +337,13 @@ async function main() {
   }
 
   /* ------------------------------------------------------------------ */
-  /* 5) Save cursor (após apply) */
+  /* 5) Save cursor (após apply)                                         */
   /* ------------------------------------------------------------------ */
 
   await cursorStore.save(vaultAbs, nextCursor ?? cursor);
 
   /* ------------------------------------------------------------------ */
-  /* 6) PUSH LAST (local -> remote), mas evita empurrar paths ainda em conflito */
+  /* 6) PUSH LAST (local -> remote), evita empurrar paths ainda em conflito */
   /* ------------------------------------------------------------------ */
 
   const finalStatesBeforePush = await stateStore.loadAll(vaultAbs);
@@ -345,12 +351,13 @@ async function main() {
 
   const blockedPaths = new Set(finalConflictsBeforePush.map((c) => c.path));
 
-  // ✅ RETRY NO PULL PARA DEDUPE ANTES DO PUSH
-  const { events: remoteAllBeforePush } = await withRetry(
+  // Dedupe contra remoto antes de enviar
+  const remoteAllBeforePushRes = await withRetry(
     () => provider.pullHistoryEvents(null),
     retryPolicy,
     sleep
   );
+  const remoteAllBeforePush = remoteAllBeforePushRes.events;
 
   const remoteIds = new Set(remoteAllBeforePush.map((e) => e.id));
 
@@ -360,20 +367,18 @@ async function main() {
   const remoteSigs = new Set(remoteAllBeforePush.map(signature));
 
   const toPush = allLocalEvents.filter(
-    (e) => !blockedPaths.has(e.change.path) && !remoteIds.has(e.id) && !remoteSigs.has(signature(e))
+    (e) =>
+      !blockedPaths.has(e.change.path) &&
+      !remoteIds.has(e.id) &&
+      !remoteSigs.has(signature(e))
   );
 
   const remoteEventsById = new Map(remoteAllBeforePush.map((e) => [e.id, e]));
 
-  // ✅ RETRY NO PUSH FINAL
-  await withRetry(
-    () => provider.pushHistoryEvents(toPush),
-    retryPolicy,
-    sleep
-  );
+  await withRetry(() => provider.pushHistoryEvents(toPush), retryPolicy, sleep);
 
-  // ✅ Após push bem-sucedido, convergir para synced imediatamente.
-  const latestPushedByPath = buildLatestLocalByPath(toPush);
+  // Após push OK, convergir para synced
+  const latestPushedByPath = buildLatestByPath(toPush);
   for (const [p, ev] of latestPushedByPath.entries()) {
     if (isDeletedEvent(ev)) {
       await upsertStatePatch({
@@ -397,9 +402,9 @@ async function main() {
 
   console.log("Push OK:", toPush.length, "novos eventos enviados.");
 
-  // 🔧 RECONCILIAÇÃO:
+  // Reconciliar o que já estava no remoto pelo id
   const alreadyInRemote = allLocalEvents.filter((e) => remoteEventsById.has(e.id));
-  const latestAckedByPath = buildLatestLocalByPath(alreadyInRemote);
+  const latestAckedByPath = buildLatestByPath(alreadyInRemote);
 
   for (const [p, ev] of latestAckedByPath.entries()) {
     if (isDeletedEvent(ev)) {
@@ -423,11 +428,12 @@ async function main() {
   }
 
   /* ------------------------------------------------------------------ */
-  /* 7) Final summary */
+  /* 7) Final summary                                                   */
   /* ------------------------------------------------------------------ */
 
   const allStatesAfter = await stateStore.loadAll(vaultAbs);
-  const { conflicts: conflictsAfter, comparisons: comparisonsAfter } = compareAllStates(allStatesAfter);
+  const { conflicts: conflictsAfter, comparisons: comparisonsAfter } =
+    compareAllStates(allStatesAfter);
 
   console.log("Resumo (final):", {
     total: comparisonsAfter.length,

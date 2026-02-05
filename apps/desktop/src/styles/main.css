@@ -571,3 +571,9 @@ body {
 
 .ms-diff-line.is-add { background: rgba(80, 255, 140, 0.10); }
 .ms-diff-line.is-del { background: rgba(255, 80, 80, 0.10); }
+
+.sync-status { font-size: 12px; opacity: 0.85; margin-bottom: 8px; }
+.sync-syncing { color: #f0c000; }
+.sync-ok { color: #00c853; }
+.sync-conflict { color: #ff5252; }
+.sync-error { color: #ff1744; }

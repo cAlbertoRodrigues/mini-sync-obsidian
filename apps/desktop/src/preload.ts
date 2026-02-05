@@ -1,28 +1,27 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { ChangeItem } from "./ui/models/changes.js";
 
-contextBridge.exposeInMainWorld("miniSync", {
-  listChanges(vaultId: string): Promise<ChangeItem[]> {
-    return ipcRenderer.invoke("changes:list", { vaultId });
+type IpcChannel =
+  | "changes:list"
+  | "changes:readFileSide"
+  | "changes:saveMerged"
+  | "changes:acceptResolution"
+  | "sync:run"
+  | "sync:status";
+
+type Unsubscribe = () => void;
+
+const api = {
+  invoke<T = unknown>(channel: Exclude<IpcChannel, "sync:status">, args?: any) {
+    return ipcRenderer.invoke(channel, args) as Promise<T>;
   },
 
-  readFileSide(
-    vaultId: string,
-    filePath: string,
-    side: "base" | "local" | "remote"
-  ): Promise<string> {
-    return ipcRenderer.invoke("changes:readFileSide", { vaultId, filePath, side });
+  on<T = unknown>(channel: Extract<IpcChannel, "sync:status">, listener: (payload: T) => void): Unsubscribe {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: T) => listener(payload);
+    ipcRenderer.on(channel, wrapped);
+    return () => ipcRenderer.removeListener(channel, wrapped);
   },
+};
 
-  saveMerged(vaultId: string, filePath: string, content: string): Promise<{ ok: boolean }> {
-    return ipcRenderer.invoke("changes:saveMerged", { vaultId, filePath, content });
-  },
+contextBridge.exposeInMainWorld("api", api);
 
-  acceptResolution(
-    vaultId: string,
-    filePath: string,
-    strategy: "keep_local" | "keep_remote" | "manual_merge"
-  ): Promise<{ ok: boolean }> {
-    return ipcRenderer.invoke("changes:acceptResolution", { vaultId, filePath, strategy });
-  },
-});
+export type DesktopApi = typeof api;

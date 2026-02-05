@@ -19,19 +19,84 @@ function dateFromIso(iso: string): string {
   return iso.slice(0, 10); // YYYY-MM-DD
 }
 
+async function exists(p: string) {
+  try {
+    await fs.stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remote folder provider (local filesystem acting as remote) that follows the
+ * system remote contract:
+ *
+ * <remoteRoot>/
+ *   MiniSync/
+ *     <vaultId>/
+ *       meta.json
+ *       cursor.json
+ *       history/
+ *         YYYY-MM-DD.jsonl
+ *       snapshots/         (reservado para futuro)
+ */
 export class RemoteFolderSyncProvider implements SyncProvider {
-  constructor(private readonly remoteRootDir: string) {}
+  constructor(
+    private readonly remoteRootDir: string,
+    private readonly vaultId: string
+  ) {}
+
+  private appRootDir(): string {
+    return path.join(this.remoteRootDir, "MiniSync");
+  }
+
+  private vaultRootDir(): string {
+    return path.join(this.appRootDir(), this.vaultId);
+  }
 
   private historyDir(): string {
-    return path.join(this.remoteRootDir, "mini-sync", "history");
+    return path.join(this.vaultRootDir(), "history");
+  }
+
+  private snapshotsDir(): string {
+    return path.join(this.vaultRootDir(), "snapshots");
   }
 
   private historyFile(date: string): string {
     return path.join(this.historyDir(), `${date}.jsonl`);
   }
 
+  private metaFile(): string {
+    return path.join(this.vaultRootDir(), "meta.json");
+  }
+
+  private cursorFile(): string {
+    return path.join(this.vaultRootDir(), "cursor.json");
+  }
+
   private async ensureStructure(): Promise<void> {
     await fs.mkdir(this.historyDir(), { recursive: true });
+    await fs.mkdir(this.snapshotsDir(), { recursive: true });
+
+    // meta.json (cria se não existir)
+    const metaPath = this.metaFile();
+    if (!(await exists(metaPath))) {
+      const meta = {
+        version: 1,
+        provider: "remote-folder",
+        vaultId: this.vaultId,
+        createdAtIso: new Date().toISOString(),
+      };
+      await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), "utf-8");
+    }
+
+    // cursor.json (cria se não existir) - útil para debug/inspeção manual
+    const cursorPath = this.cursorFile();
+    if (!(await exists(cursorPath))) {
+      const payload = { value: null as string | null };
+      await fs.writeFile(cursorPath, JSON.stringify(payload, null, 2), "utf-8");
+    }
   }
 
   async pushHistoryEvents(events: HistoryEvent[]): Promise<void> {
@@ -54,7 +119,9 @@ export class RemoteFolderSyncProvider implements SyncProvider {
     }
   }
 
-  async pullHistoryEvents(cursor: SyncCursor | null): Promise<{ events: HistoryEvent[]; nextCursor: SyncCursor | null }> {
+  async pullHistoryEvents(
+    cursor: SyncCursor | null
+  ): Promise<{ events: HistoryEvent[]; nextCursor: SyncCursor | null }> {
     await this.ensureStructure();
 
     const cur = parseCursor(cursor);
@@ -88,13 +155,12 @@ export class RemoteFolderSyncProvider implements SyncProvider {
           lastDate = date;
           lastLine = i;
         } catch {
-          // ignora linha inválida (tolerância)
+          // ignora linha inválida
         }
       }
     }
 
     if (lastDate === null) {
-      // nada novo
       return { events: [], nextCursor: cursor };
     }
 

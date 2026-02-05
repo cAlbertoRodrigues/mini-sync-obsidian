@@ -1,151 +1,129 @@
-import { el } from "../utils/dom.js";
-import type { ChangeItem } from "../models/changes.js";
-import { diffLines } from "../utils/line.diff.js";
-import { threeWayMerge } from "../utils/three-way-merge.js";
+import type { ChangeRow, ConflictStrategyUi } from "../models/changes.js";
+import { loadChanges, runSyncNow } from "../providers/sync-provider.js";
 
-type Props = {
-  vaultId: string;
-  onBack: () => void;
-};
-
-export async function renderVaultChangesView(props: Props): Promise<HTMLElement> {
-  const wrap = el("div", { className: "ms-changes" });
-
-  // topbar
-  const top = el("div", { className: "ms-changes-top" });
-  const back = el("button", { className: "ms-link-btn", textContent: "← Voltar" });
-  back.addEventListener("click", props.onBack);
-  const title = el("h2", { className: "ms-changes-title", textContent: "Changes" });
-  top.append(back, title);
-
-  // layout
-  const body = el("div", { className: "ms-changes-body" });
-  const list = el("div", { className: "ms-changes-list" });
-  const panel = el("div", { className: "ms-changes-panel" });
-  body.append(list, panel);
-
-  wrap.append(top, body);
-
-  const items = await window.miniSync.listChanges(props.vaultId);
-
-if (items.length === 0) {
-  wrap.append(el("p", { className: "ms-empty", textContent: "Nenhuma mudança encontrada." }));
-  return wrap;
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  return e;
 }
 
-let selected: ChangeItem = items[0];
+async function acceptResolution(vaultId: string, filePath: string, strategy: ConflictStrategyUi) {
+  await window.api.invoke("changes:acceptResolution", { vaultId, filePath, strategy });
+}
 
+export async function renderVaultChangesView(opts: {
+  root: HTMLElement;
+  vaultId: string;
+  remoteRootDir: string;
+}) {
+  const { root, vaultId, remoteRootDir } = opts;
 
-  function badge(status: ChangeItem["status"]) {
-    const cls =
-      status === "conflict" ? "ms-badge ms-badge--danger" :
-      status === "local_changed" ? "ms-badge ms-badge--warn" :
-      status === "remote_changed" ? "ms-badge ms-badge--info" :
-      status === "both_changed" ? "ms-badge ms-badge--warn" :
-      "ms-badge";
-    return el("span", { className: cls, textContent: status });
-  }
+  root.innerHTML = "";
 
-  function renderList() {
-    list.replaceChildren();
-    for (const it of items) {
-      const row = el("button", { className: `ms-change-row ${it.path === selected.path ? "is-active" : ""}` });
-      row.append(
-        el("div", { className: "ms-change-path", textContent: it.path }),
-        badge(it.status)
-      );
-      row.addEventListener("click", () => {
-        selected = it;
-        renderList();
-        void renderPanel();
-      });
-      list.append(row);
+  const header = el("div", "view-header");
+  const title = el("h2");
+  title.textContent = "Changes & Conflicts";
+
+  const actions = el("div", "view-actions");
+  const syncBtn = el("button", "btn btn-primary");
+  syncBtn.textContent = "Sync now";
+  syncBtn.onclick = async () => {
+    syncBtn.disabled = true;
+    try {
+      await runSyncNow({ vaultId, remoteRootDir, defaultStrategy: "local" });
+      await refresh();
+    } finally {
+      syncBtn.disabled = false;
     }
-  }
+  };
 
-  async function renderPanel() {
-    panel.replaceChildren(
-      el("div", { className: "ms-muted", textContent: "Carregando..." })
-    );
+  const refreshBtn = el("button", "btn");
+  refreshBtn.textContent = "Refresh";
+  refreshBtn.onclick = async () => refresh();
 
-    const filePath = selected.path;
+  actions.appendChild(syncBtn);
+  actions.appendChild(refreshBtn);
 
-    const [base, local, remote] = await Promise.all([
-      window.miniSync.readFileSide(props.vaultId, filePath, "base").catch(() => ""),
-      window.miniSync.readFileSide(props.vaultId, filePath, "local"),
-      window.miniSync.readFileSide(props.vaultId, filePath, "remote"),
-    ]);
+  header.appendChild(title);
+  header.appendChild(actions);
 
-    const actions = el("div", { className: "ms-change-actions" });
+  const list = el("div", "changes-list");
+  root.appendChild(header);
+  root.appendChild(list);
 
-    const keepLocal = el("button", { className: "ms-btn ms-btn--default", textContent: "Keep Local" });
-    keepLocal.addEventListener("click", async () => {
-      await window.miniSync.acceptResolution(props.vaultId, filePath, "keep_local");
-      alert("Resolvido: keep_local (MVP)");
-    });
+  async function refresh() {
+    list.innerHTML = "";
+    const rows = await loadChanges(vaultId);
 
-    const keepRemote = el("button", { className: "ms-btn ms-btn--default", textContent: "Keep Remote" });
-    keepRemote.addEventListener("click", async () => {
-      await window.miniSync.acceptResolution(props.vaultId, filePath, "keep_remote");
-      alert("Resolvido: keep_remote (MVP)");
-    });
+    if (rows.length === 0) {
+      const empty = el("div", "empty");
+      empty.textContent = "No changes.";
+      list.appendChild(empty);
+      return;
+    }
 
-    const manual = el("button", { className: "ms-btn ms-btn--primary", textContent: "Manual Merge" });
-    manual.addEventListener("click", async () => {
-      const result = prompt(
-        "Cole aqui o conteúdo final do merge (MVP). Depois trocamos por modal 4 panes.\n\nDica: use Auto-merge primeiro."
-      );
-      if (result == null) return;
-      await window.miniSync.saveMerged(props.vaultId, filePath, result);
-      await window.miniSync.acceptResolution(props.vaultId, filePath, "manual_merge");
-      alert("Merge salvo no LOCAL (MVP).");
-    });
+    const conflicts = rows.filter((r) => r.status === "conflict");
 
-    const autoMerge = el("button", { className: "ms-btn ms-btn--default", textContent: "Auto-merge" });
-    autoMerge.addEventListener("click", async () => {
-      const r = threeWayMerge(base, local, remote);
-      await window.miniSync.saveMerged(props.vaultId, filePath, r.text);
-      alert(r.kind === "merged" ? "Auto-merge OK" : "Auto-merge gerou conflito markers");
-    });
+    if (conflicts.length > 0) {
+      const banner = el("div", "banner banner-warning");
+      banner.textContent = `⚠️ ${conflicts.length} conflict(s) detected. Resolve them and re-sync.`;
+      list.appendChild(banner);
+    }
 
-    actions.append(keepLocal, keepRemote, autoMerge, manual);
+    for (const r of rows) {
+      const card = el("div", `change-card status-${r.status}`);
 
-    // diff local vs base (ou remote vs base, dependendo do status)
-    const leftLabel = el("div", { className: "ms-diff-label", textContent: "BASE → LOCAL" });
-    const chunks = diffLines(base, local);
+      const top = el("div", "change-top");
+      const pathEl = el("div", "change-path");
+      pathEl.textContent = r.path;
 
-    const diff = el("div", { className: "ms-diff" });
-    for (const c of chunks) {
-      for (const line of c.lines) {
-        const row = el("div", {
-          className:
-            c.op === "add" ? "ms-diff-line is-add" :
-            c.op === "del" ? "ms-diff-line is-del" :
-            "ms-diff-line",
-          textContent:
-            c.op === "add" ? `+ ${line}` :
-            c.op === "del" ? `- ${line}` :
-            `  ${line}`,
-        });
-        diff.append(row);
+      const statusEl = el("div", "change-status");
+      statusEl.textContent = r.summary;
+
+      top.appendChild(pathEl);
+      top.appendChild(statusEl);
+      card.appendChild(top);
+
+      if (r.status === "conflict") {
+        const row = el("div", "conflict-actions");
+
+        const keepLocal = el("button", "btn btn-primary");
+        keepLocal.textContent = "Keep local";
+        keepLocal.onclick = async () => {
+          await acceptResolution(vaultId, r.path, "keep_local");
+          await runSyncNow({ vaultId, remoteRootDir, defaultStrategy: "local" }); // ✅ re-sync
+          await refresh();
+        };
+
+        const keepRemote = el("button", "btn");
+        keepRemote.textContent = "Keep remote";
+        keepRemote.onclick = async () => {
+          await acceptResolution(vaultId, r.path, "keep_remote");
+          await runSyncNow({ vaultId, remoteRootDir, defaultStrategy: "remote" }); // ✅ re-sync
+          await refresh();
+        };
+
+        const manual = el("button", "btn");
+        manual.textContent = "Manual merge";
+        manual.onclick = async () => {
+          // MVP: marca decisão e deixa usuário editar (você já tem saveMerged)
+          await acceptResolution(vaultId, r.path, "manual_merge");
+
+          // Você pode abrir um editor aqui (3-way) depois.
+          // Por agora: só re-sync (vai considerar sua decisão + conteúdo local após salvar)
+          await runSyncNow({ vaultId, remoteRootDir, defaultStrategy: "local" });
+          await refresh();
+        };
+
+        row.appendChild(keepLocal);
+        row.appendChild(keepRemote);
+        row.appendChild(manual);
+        card.appendChild(row);
       }
+
+      list.appendChild(card);
     }
-
-    panel.replaceChildren(
-      el("div", { className: "ms-change-header" },),
-    );
-
-    const header = el("div", { className: "ms-change-header" });
-    header.append(
-      el("div", { className: "ms-change-file", textContent: filePath }),
-      el("div", { className: "ms-muted", textContent: selected.summary })
-    );
-
-    panel.replaceChildren(header, actions, leftLabel, diff);
   }
 
-  renderList();
-  await renderPanel();
-
-  return wrap;
+  await refresh();
 }
