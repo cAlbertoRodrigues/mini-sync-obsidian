@@ -31,16 +31,15 @@ node_modules/
 **/node_modules/
 
 .pnp.*
+.pnpm-store/
+**/.pnpm-store/
+
 .yarn/*
 !.yarn/patches
 !.yarn/plugins
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
-
-# pnpm store (sometimes local)
-.pnpm-store/
-**/.pnpm-store/
 
 ############################################
 # Build outputs (TypeScript / bundlers)
@@ -56,7 +55,9 @@ lib/
 bin/
 **/bin/
 
+############################################
 # Coverage
+############################################
 coverage/
 **/coverage/
 .nyc_output/
@@ -68,18 +69,8 @@ coverage/
 **/*.tsbuildinfo
 
 ############################################
-# Generated JS + sourcemaps (robusto)
-# (evita que JS/Maps gerados em src subam)
-############################################
-**/*.js
-**/*.cjs
-**/*.mjs
-**/*.js.map
-**/*.cjs.map
-**/*.mjs.map
-
-############################################
-# Generated typings (se você NÃO versiona dist)
+# Sourcemaps / generated typings
+# (Se você NÃO versiona dist, ignore typings gerados)
 ############################################
 **/*.d.ts
 **/*.d.ts.map
@@ -102,17 +93,14 @@ coverage/
 ############################################
 # Electron (runtime + packaging)
 ############################################
-# Electron builder / forge / packagers
 release/
 **/release/
 dist_electron/
 **/dist_electron/
 app-out/
 **/app-out/
-out/
-**/out/
 
-# Local user data (às vezes aparece)
+# Local user data / runtime artefacts
 *.asar
 *.asar.unpacked/
 
@@ -139,7 +127,6 @@ junit.xml
 .obsidian/
 .mini-sync/
 .trash/
-.DS_Store
 
 ############################################
 # Windows shortcuts / links
