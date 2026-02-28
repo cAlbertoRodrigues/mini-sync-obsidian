@@ -1,14 +1,15 @@
-import fs from "fs/promises";
-import path from "path";
+import fs from "node:fs/promises";
+import path from "node:path";
+
 import { ChokidarFileWatcher } from "../adapters/chokidar-file-watcher";
 import { createObsidianIgnore } from "../adapters/obsidian-ignore";
 import { NodeFileHasher } from "../adapters/node-file-hasher";
-import type { FileMetadata } from "../value-objects/file-metadata";
 import { NodeHistoryRepository } from "../adapters/node-history-repository";
 import { createHistoryEvent } from "../value-objects/history-event";
+import type { FileMetadata } from "../value-objects/file-metadata";
+import { NodeBlobStore } from "../adapters/node-blob-store";
 
 function stripOuterQuotes(input: string): string {
-  // remove apenas 1 par de aspas externas, se existir
   return input.replace(/^"(.*)"$/, "$1");
 }
 
@@ -30,10 +31,6 @@ async function exists(p: string) {
   }
 }
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 async function main() {
   const rawVaultPath = process.argv[2];
   if (!rawVaultPath) {
@@ -47,42 +44,41 @@ async function main() {
   const historyRepo = new NodeHistoryRepository();
   const watcher = new ChokidarFileWatcher();
   const hasher = new NodeFileHasher();
+  const blobStore = new NodeBlobStore();
 
-  // lock usado pelo sync-drive durante apply (e vamos respeitar aqui)
   const applyingLockAbs = path.join(vaultAbs, ".mini-sync", "state", "applying.lock");
 
-  // cooldown para pegar autosave/normalização do Obsidian logo após apply
   let ignoreUntilMs = 0;
-
-  // dedupe rápido: evita modified repetido com mesmo hash (por path)
   const lastHashByPath = new Map<string, string>();
 
+  const INLINE_TEXT_MAX = 64 * 1024; // 64KB
+
+  function isProbablyText(rel: string) {
+    const l = rel.toLowerCase();
+    return (
+      l.endsWith(".md") ||
+      l.endsWith(".txt") ||
+      l.endsWith(".json") ||
+      l.endsWith(".yml") ||
+      l.endsWith(".yaml")
+    );
+  }
+
   watcher.onEvent(async (e) => {
-    // Se o sync está aplicando (ou acabou de aplicar), não registrar nada
     const now = Date.now();
 
-    // Se lock existe, estende o ignore para logo após o unlock
     if (await exists(applyingLockAbs)) {
       ignoreUntilMs = Math.max(ignoreUntilMs, now + 1500);
       return;
     }
-    if (now < ignoreUntilMs) {
-      return;
-    }
+    if (now < ignoreUntilMs) return;
 
-    // e.path já deve ser absoluto (do watcher). Se não for, torna absoluto.
     const abs = path.isAbsolute(e.path) ? e.path : path.join(vaultAbs, e.path);
 
-    // caminho RELATIVO ao vault (isso é o que vai para o histórico)
     const rel = path.relative(vaultAbs, abs).replaceAll("\\", "/");
-
-    // Se por algum motivo o evento estiver fora do vault, ignora
     if (!isInsideVault(rel)) return;
 
-    // Evita loop e sujeira: nunca registrar a pasta interna do mini-sync
     if (rel.startsWith(".mini-sync/") || rel === ".mini-sync") return;
-
-    // Evita ruído do Obsidian (workspace/cache/metadata)
     if (rel.startsWith(".obsidian/") || rel === ".obsidian") return;
 
     const meta: FileMetadata = {
@@ -92,7 +88,8 @@ async function main() {
       occurredAt: e.occurredAt,
     };
 
-    let metaContent: string | undefined;
+    let contentUtf8: string | undefined;
+    let blobSha: string | undefined;
 
     if (e.type !== "deleted") {
       try {
@@ -100,41 +97,46 @@ async function main() {
         meta.sizeBytes = stat.size;
         meta.mtimeMs = stat.mtimeMs;
 
-        // hash do arquivo
         meta.hash = await hasher.hashFile(abs);
 
-        // ✅ dedupe: se modified com mesmo hash do último, ignora
         if (e.type === "modified" && meta.hash?.value) {
           const prev = lastHashByPath.get(rel);
-          if (prev && prev === meta.hash.value) {
-            return;
-          }
+          if (prev && prev === meta.hash.value) return;
           lastHashByPath.set(rel, meta.hash.value);
         }
 
-        // Conteúdo só para markdown (por enquanto)
-        if (rel.toLowerCase().endsWith(".md")) {
-          metaContent = await fs.readFile(abs, "utf-8");
+        if (meta.hash?.value) {
+          const buf = await fs.readFile(abs);
+
+          if (isProbablyText(rel) && buf.byteLength <= INLINE_TEXT_MAX) {
+            contentUtf8 = buf.toString("utf-8");
+          } else {
+            await blobStore.put(vaultAbs, meta.hash.value, buf);
+            blobSha = meta.hash.value;
+          }
         }
       } catch (err) {
         console.error("Falha ao ler/stat/hash:", abs, err);
       }
     } else {
-      // se deletou, limpa dedupe
       lastHashByPath.delete(rel);
     }
 
     const event = createHistoryEvent(meta, "local");
-    if (metaContent !== undefined) {
-      event.content = metaContent;
-      event.encoding = "utf-8";
+
+    if (contentUtf8 !== undefined) {
+      event.contentUtf8 = contentUtf8;
+    } else if (blobSha && meta.sizeBytes) {
+      event.blob = { sha256: blobSha, sizeBytes: meta.sizeBytes };
     }
 
     await historyRepo.append(vaultAbs, event);
 
     console.log(
       `[${meta.occurredAt.toISOString()}] ${meta.changeType}: ${meta.path}` +
-        (meta.hash ? ` sha256=${meta.hash.value.slice(0, 12)}...` : "")
+        (meta.hash ? ` sha256=${meta.hash.value.slice(0, 12)}...` : "") +
+        (event.blob ? ` blob=${event.blob.sha256.slice(0, 12)}...` : "") +
+        (event.contentUtf8 !== undefined ? ` inlineText=${event.contentUtf8.length}B` : "")
     );
   });
 

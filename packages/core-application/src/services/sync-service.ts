@@ -1,7 +1,11 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 
-import type { SyncProvider, SyncCursor } from "../ports/sync-provider";
+import { NodeBlobStore } from "../adapters/node-blob-store";
+import { SnapshotService } from "./snapshot-service";
+import type { SnapshotManifest } from "../value-objects/snapshot-manifest";
+
+import type { SyncProvider } from "../ports/sync-provider";
 import type { FileHash } from "../ports/file-hasher";
 import type { HistoryEvent } from "../value-objects/history-event";
 import type { FileSyncState } from "../value-objects/file-sync-state";
@@ -23,9 +27,11 @@ import { NodeHistoryRepository } from "../adapters/node-history-repository";
 import { NodeConflictDecisionStore } from "../adapters/node-conflict-decision-store";
 import { VaultEventApplier } from "../adapters/vault-event-applier";
 
-export type ConflictType = "both_modified" | "local_deleted_remote_modified" | "remote_deleted_local_modified";
+export type ConflictType =
+  | "both_modified"
+  | "local_deleted_remote_modified"
+  | "remote_deleted_local_modified";
 export type Conflict = { path: string; type: ConflictType };
-
 
 const retryPolicy = defaultNetworkRetryPolicy();
 
@@ -129,13 +135,16 @@ export class SyncService {
     private readonly deps: {
       provider: SyncProvider;
       cursorStore: NodeRemoteCursorStore;
-
       applier: VaultEventApplier;
 
       hasher: NodeFileHasher;
       stateStore: NodeSyncStateStore;
       historyRepository: NodeHistoryRepository;
       decisionStore: NodeConflictDecisionStore;
+
+      // NOVO
+      blobStore: NodeBlobStore;
+      snapshotService: SnapshotService;
     }
   ) {}
 
@@ -152,8 +161,11 @@ export class SyncService {
       stateStore,
       historyRepository,
       decisionStore,
+      blobStore,
+      snapshotService,
     } = this.deps;
 
+    const vaultId = path.basename(vaultRootAbs);
     const nowIso = () => new Date().toISOString();
 
     async function upsertStatePatch(patch: Partial<FileSyncState> & { path: string }) {
@@ -173,6 +185,54 @@ export class SyncService {
       }
 
       await stateStore.upsert(vaultRootAbs, merged);
+    }
+
+    async function isVaultProbablyEmpty(): Promise<boolean> {
+      try {
+        const entries = await fs.readdir(vaultRootAbs, { withFileTypes: true });
+        const meaningful = entries.filter((e) => e.name !== ".obsidian" && e.name !== ".mini-sync");
+        return meaningful.length === 0;
+      } catch {
+        return false;
+      }
+    }
+
+    async function restoreFromSnapshotManifest(manifest: SnapshotManifest): Promise<void> {
+      for (const f of manifest.files) {
+        const abs = path.join(vaultRootAbs, f.path);
+        await fs.mkdir(path.dirname(abs), { recursive: true });
+
+        // 1) inline text
+        if (f.inlineTextUtf8 !== undefined) {
+          await fs.writeFile(abs, f.inlineTextUtf8, "utf-8");
+          continue;
+        }
+
+        // 2) blob
+        const sha = f.blobSha256 ?? f.sha256;
+        if (!(await blobStore.has(vaultRootAbs, sha))) {
+          const remoteHas = await withRetry(() => provider.hasBlob({ sha256: sha }), retryPolicy, sleep);
+          if (remoteHas) {
+            const data = await withRetry(() => provider.getBlob({ sha256: sha }), retryPolicy, sleep);
+            await blobStore.put(vaultRootAbs, sha, data);
+          }
+        }
+
+        const data = await blobStore.get(vaultRootAbs, sha);
+        await fs.writeFile(abs, data);
+      }
+    }
+
+    /* ------------------------------------------------------------- */
+    /* 0) Bootstrap: vault vazio + snapshot remoto                     */
+    /* ------------------------------------------------------------- */
+    if (await isVaultProbablyEmpty()) {
+      const snaps = await withRetry(() => provider.listSnapshots(), retryPolicy, sleep);
+      if (snaps.length > 0) {
+        const latest = snaps[snaps.length - 1]!;
+        const manifest = await withRetry(() => provider.getSnapshotManifest(latest), retryPolicy, sleep);
+        await restoreFromSnapshotManifest(manifest);
+      }
     }
 
     /* ------------------------------------------------------------- */
@@ -198,11 +258,7 @@ export class SyncService {
     const cursor = await cursorStore.load(vaultRootAbs);
     const cursorBefore = cursor?.value ?? null;
 
-    const pullRes = await withRetry(
-      () => provider.pullHistoryEvents(cursor),
-      retryPolicy,
-      sleep
-    );
+    const pullRes = await withRetry(() => provider.pullHistoryEvents(cursor), retryPolicy, sleep);
 
     const pulled = pullRes.events;
     const nextCursor = pullRes.nextCursor;
@@ -224,11 +280,7 @@ export class SyncService {
     const { conflicts: conflictsBefore } = compareAllStates(allStatesBefore);
 
     // puxa “remoto completo” (necessário para keep-remote reconstituir)
-    const remoteAllNow = await withRetry(
-      () => provider.pullHistoryEvents(null),
-      retryPolicy,
-      sleep
-    );
+    const remoteAllNow = await withRetry(() => provider.pullHistoryEvents(null), retryPolicy, sleep);
 
     if (conflictsBefore.length > 0) {
       for (const c of conflictsBefore) {
@@ -274,6 +326,16 @@ export class SyncService {
     /* 4) Apply remote events (excluding conflicts) + mark synced      */
     /* ------------------------------------------------------------- */
     const toApply = pulled.filter((ev) => !conflictPaths.has(ev.change.path));
+
+    // NOVO: garantir blobs locais antes do apply
+    for (const ev of toApply) {
+      const sha = ev.blob?.sha256;
+      if (!sha) continue;
+      if (await blobStore.has(vaultRootAbs, sha)) continue;
+
+      const data = await withRetry(() => provider.getBlob({ sha256: sha }), retryPolicy, sleep);
+      await blobStore.put(vaultRootAbs, sha, data);
+    }
 
     if (toApply.length > 0) {
       await setApplyLock(vaultRootAbs);
@@ -321,11 +383,7 @@ export class SyncService {
     const blockedPaths = new Set(finalConflictsBeforePush.map((c) => c.path));
 
     // dedupe contra remoto antes de enviar
-    const remoteAllBeforePush = await withRetry(
-      () => provider.pullHistoryEvents(null),
-      retryPolicy,
-      sleep
-    );
+    const remoteAllBeforePush = await withRetry(() => provider.pullHistoryEvents(null), retryPolicy, sleep);
 
     const remoteIds = new Set(remoteAllBeforePush.events.map((e) => e.id));
     const signature = (e: HistoryEvent) =>
@@ -338,6 +396,25 @@ export class SyncService {
         !remoteIds.has(e.id) &&
         !remoteSigs.has(signature(e))
     );
+
+    // NOVO: garantir blobs no remoto antes de enviar eventos
+    for (const ev of toPush) {
+      const sha = ev.blob?.sha256;
+      if (!sha) continue;
+
+      const existsRemote = await withRetry(() => provider.hasBlob({ sha256: sha }), retryPolicy, sleep);
+      if (existsRemote) continue;
+
+      if (!(await blobStore.has(vaultRootAbs, sha))) {
+        // fallback: tenta ler do arquivo atual do vault
+        const abs = path.join(vaultRootAbs, ev.change.path.replaceAll("\\", "/"));
+        const buf = await fs.readFile(abs);
+        await blobStore.put(vaultRootAbs, sha, buf);
+      }
+
+      const buf = await blobStore.get(vaultRootAbs, sha);
+      await withRetry(() => provider.putBlob({ sha256: sha }, buf), retryPolicy, sleep);
+    }
 
     await withRetry(() => provider.pushHistoryEvents(toPush), retryPolicy, sleep);
 
@@ -362,6 +439,41 @@ export class SyncService {
           lastSyncedHash: h,
         });
       }
+    }
+
+    /* ------------------------------------------------------------- */
+    /* 6.1) Snapshot: publicar manifest após push (concreto)           */
+    /* ------------------------------------------------------------- */
+    if (toPush.length > 0) {
+      const manifest = await snapshotService.createSnapshotManifest({
+        vaultRootAbs,
+        vaultId,
+      });
+
+      // garantir blobs do manifest no remoto
+      for (const f of manifest.files) {
+        const sha = f.blobSha256;
+        if (!sha) continue;
+
+        const ok = await withRetry(() => provider.hasBlob({ sha256: sha }), retryPolicy, sleep);
+        if (ok) continue;
+
+        if (!(await blobStore.has(vaultRootAbs, sha))) {
+          // snapshot-service geralmente já colocou; mas garante
+          const abs = path.join(vaultRootAbs, f.path);
+          const buf = await fs.readFile(abs);
+          await blobStore.put(vaultRootAbs, sha, buf);
+        }
+
+        const buf = await blobStore.get(vaultRootAbs, sha);
+        await withRetry(() => provider.putBlob({ sha256: sha }, buf), retryPolicy, sleep);
+      }
+
+      await withRetry(
+        () => provider.putSnapshotManifest({ id: manifest.id }, manifest),
+        retryPolicy,
+        sleep
+      );
     }
 
     /* ------------------------------------------------------------- */
