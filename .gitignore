@@ -68,12 +68,6 @@ coverage/
 *.tsbuildinfo
 **/*.tsbuildinfo
 
-############################################
-# Sourcemaps / generated typings
-# (Se você NÃO versiona dist, ignore typings gerados)
-############################################
-**/*.d.ts
-**/*.d.ts.map
 
 ############################################
 # Env files / secrets
