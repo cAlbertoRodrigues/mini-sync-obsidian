@@ -79,17 +79,16 @@ async function warnIfProbablyWrongVaultPath(vaultAbs: string) {
   } catch {}
 
   console.warn(
-    `Aviso: não encontrei ".obsidian" em "${vaultAbs}". ` +
-      `Se este for um vault novo, tudo bem.`
+    `Aviso: não encontrei ".obsidian" em "${vaultAbs}". ` + `Se este for um vault novo, tudo bem.`
   );
 }
 
 function pickHashFromEvent(e: HistoryEvent): FileHash | undefined {
-  return e?.change?.hash;
+  return (e as any)?.change?.hash;
 }
 
 function isDeletedEvent(e: HistoryEvent) {
-  return e?.change?.changeType === "deleted";
+  return (e as any)?.change?.changeType === "deleted";
 }
 
 function buildLatestByPath(events: HistoryEvent[]): Map<string, HistoryEvent> {
@@ -100,7 +99,7 @@ function buildLatestByPath(events: HistoryEvent[]): Map<string, HistoryEvent> {
   });
 
   const map = new Map<string, HistoryEvent>();
-  for (const e of sorted) map.set(e.change.path, e);
+  for (const e of sorted) map.set((e as any).change.path, e);
   return map;
 }
 
@@ -121,9 +120,9 @@ function dedupeLocalNoHashChange(events: HistoryEvent[]): HistoryEvent[] {
   );
 
   for (const e of sorted) {
-    const p = e.change.path;
-    const type = e.change.changeType;
-    const h = normalizeHash(e.change.hash);
+    const p = (e as any).change.path;
+    const type = (e as any).change.changeType;
+    const h = normalizeHash((e as any).change.hash);
 
     if (type === "modified") {
       const prev = lastHashByPath.get(p);
@@ -276,8 +275,12 @@ async function main() {
       synced: comparisons.filter((c) => c.status === "synced").length,
     });
 
-    // Puxa todo remoto para resolver keep-remote e para dedupe
-    const remoteAllNow = await withRetry(() => provider.pullAllHistoryEvents(), retryPolicy, sleep);
+    // ✅ Puxa todo remoto (Drive) para resolver keep-remote e para dedupe
+    const { events: remoteAllNow } = await withRetry(
+      () => provider.pullHistoryEvents(null),
+      retryPolicy,
+      sleep
+    );
 
     if (conflictsBefore.length > 0) {
       console.log(
@@ -328,7 +331,7 @@ async function main() {
     /* 4) Apply remote events (com lock), excluindo conflitos               */
     /* ------------------------------------------------------------------ */
 
-    const toApply = pulled.filter((ev) => !conflictPaths.has(ev.change.path));
+    const toApply = pulled.filter((ev) => !conflictPaths.has((ev as any).change.path));
     console.log("Aplicando eventos remotos:", toApply.length);
 
     if (toApply.length > 0) {
@@ -379,10 +382,12 @@ async function main() {
 
     const blockedPaths = new Set(finalConflictsBeforePush.map((c) => c.path));
 
-    const remoteAllBeforePush = remoteAllNow; // já baixado acima
-    const remoteIds = new Set(remoteAllBeforePush.map((e) => e.id));
+    const remoteAllBeforePush: HistoryEvent[] = remoteAllNow; // já baixado acima
+    const remoteIds = new Set(remoteAllBeforePush.map((e: HistoryEvent) => e.id));
     const signature = (e: HistoryEvent) =>
-      `${e.change.path}|${e.change.changeType}|${normalizeHash(e.change.hash)}|${e.occurredAtIso}`;
+      `${(e as any).change.path}|${(e as any).change.changeType}|${normalizeHash(
+        (e as any).change.hash
+      )}|${e.occurredAtIso}`;
 
     const remoteSigs = new Set(remoteAllBeforePush.map(signature));
 
@@ -391,7 +396,7 @@ async function main() {
 
     const toPush = localCandidates.filter(
       (e) =>
-        !blockedPaths.has(e.change.path) &&
+        !blockedPaths.has((e as any).change.path) &&
         !remoteIds.has(e.id) &&
         !remoteSigs.has(signature(e))
     );
