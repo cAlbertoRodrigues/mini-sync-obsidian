@@ -4,20 +4,19 @@ import path from "node:path";
 import type { Conflict, ConflictType } from "@mini-sync/core-domain";
 import type { FileHasher, FileHash } from "../ports/file-hasher";
 import type { HistoryRepository } from "../ports/history-repository";
-
 import type { HistoryEvent } from "../value-objects/history-event";
-
 import { NodeSyncStateStore } from "../adapters/node-sync-state-store";
+
 import { setApplyLock, clearApplyLock } from "../adapters/apply-lock";
 
 /**
  * Estratégia "manter remoto" (MVP):
  * - Para cada conflito modified_modified:
- *   - encontra o último HistoryEvent remoto daquele path (dentro do batch do pull)
- *   - aplica o conteúdo remoto no arquivo local (com apply-lock, para não gerar evento local)
- *   - recalcula hash local
- *   - atualiza FileSyncState: lastLocalHash = lastRemoteHash = lastSyncedHash (convergência)
- *   - (opcional) registra um evento local indicando a decisão (DESLIGADO no MVP)
+ * - encontra o último HistoryEvent remoto daquele path (dentro do batch do pull)
+ * - aplica o conteúdo remoto no arquivo local (com apply-lock, para não gerar evento local)
+ * - recalcula hash local
+ * - atualiza FileSyncState: lastLocalHash = lastRemoteHash = lastSyncedHash (convergência)
+ * - (opcional) registra um evento local indicando a decisão (DESLIGADO no MVP)
  */
 export async function resolveKeepRemote(params: {
   vaultRootAbs: string;
@@ -56,8 +55,8 @@ export async function resolveKeepRemote(params: {
     // Sem evento remoto no batch => não tem como aplicar "manter remoto" agora
     if (!remoteEvent) continue;
 
-    // Só suportamos eventos com conteúdo (md utf-8 no MVP)
-    if (!remoteEvent.content || remoteEvent.encoding !== "utf-8") continue;
+    // MVP: só suporta eventos com conteúdo em UTF-8 (textos pequenos)
+    if (!remoteEvent.contentUtf8) continue;
 
     const abs = path.join(vaultRootAbs, rel);
 
@@ -65,7 +64,7 @@ export async function resolveKeepRemote(params: {
     await setApplyLock(vaultRootAbs);
     try {
       await fs.mkdir(path.dirname(abs), { recursive: true });
-      await fs.writeFile(abs, remoteEvent.content, "utf-8");
+      await fs.writeFile(abs, remoteEvent.contentUtf8, "utf-8");
     } finally {
       await clearApplyLock(vaultRootAbs);
     }
@@ -83,7 +82,8 @@ export async function resolveKeepRemote(params: {
     });
 
     // 4) (opcional) Registrar evento local refletindo decisão
-    //    ⚠️ DESLIGADO no MVP para evitar duplicar histórico e reabrir conflito via watcher.
+    // ⚠️ DESLIGADO no MVP para evitar duplicar histórico e reabrir conflito via watcher.
+    //
     // const meta: FileMetadata = {
     //   path: rel,
     //   absolutePath: abs,
@@ -93,8 +93,7 @@ export async function resolveKeepRemote(params: {
     // };
     //
     // const decisionEvent = createHistoryEvent(meta, "local");
-    // decisionEvent.content = remoteEvent.content;
-    // decisionEvent.encoding = "utf-8";
+    // decisionEvent.contentUtf8 = remoteEvent.contentUtf8;
     //
     // await historyRepository.append(vaultRootAbs, decisionEvent);
   }
