@@ -1,462 +1,646 @@
-import path from "path";
-import fs from "fs/promises";
-
-import { RemoteFolderSyncProvider } from "../adapters/remote-folder-sync-provider";
-import { NodeRemoteCursorStore } from "../adapters/node-remote-cursor-store";
-import { VaultEventApplier } from "../adapters/vault-event-applier";
-import { setApplyLock, clearApplyLock } from "../adapters/apply-lock";
-import { NodeSyncStateStore } from "../adapters/node-sync-state-store";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { clearApplyLock, setApplyLock } from "../adapters/apply-lock";
+import { NodeConflictDecisionStore } from "../adapters/node-conflict-decision-store";
 import { NodeFileHasher } from "../adapters/node-file-hasher";
 import { NodeHistoryRepository } from "../adapters/node-history-repository";
-import { NodeConflictDecisionStore } from "../adapters/node-conflict-decision-store";
-
-import type { HistoryEvent } from "../value-objects/history-event";
-import type { FileSyncState } from "../value-objects/file-sync-state";
-import type { FileHash } from "../ports/file-hasher";
+import { NodeRemoteCursorStore } from "../adapters/node-remote-cursor-store";
+import { NodeSyncStateStore } from "../adapters/node-sync-state-store";
+import { RemoteFolderSyncProvider } from "../adapters/remote-folder-sync-provider";
+import { VaultEventApplier } from "../adapters/vault-event-applier";
+import { defaultNetworkRetryPolicy } from "../application/default-network-retry-policy";
+import { withRetry } from "../application/with-retry";
+import { sleep } from "../infra/sleep";
 import type { ConflictResolutionStrategy } from "../ports/conflict-decision-store";
-
-import { compareAllStates } from "../services/sync-diff";
+import type { FileHash } from "../ports/file-hasher";
 import { resolveKeepLocal } from "../services/keep-local";
 import { resolveKeepRemote } from "../services/keep-remote";
-
-import { withRetry } from "../application/with-retry";
-import { defaultNetworkRetryPolicy } from "../application/default-network-retry-policy";
-import { sleep } from "../infra/sleep";
+import { compareAllStates } from "../services/sync-diff";
+import type { FileSyncState } from "../value-objects/file-sync-state";
+import type { HistoryEvent } from "../value-objects/history-event";
 
 const retryPolicy = defaultNetworkRetryPolicy();
 
 /**
- * Converte hash para string comparável. Suporta:
- * - string
- * - { algorithm, value }
+ * Normaliza diferentes formatos de hash para string.
+ *
+ * @param h Valor bruto do hash.
+ * @returns Hash normalizado ou `undefined`.
  */
-function normalizeHash(h: any): string | undefined {
-  if (!h) return undefined;
-  if (typeof h === "string") return h;
-  if (typeof h === "object" && typeof h.value === "string") return h.value;
-  return undefined;
+function normalizeHash(h: unknown): string | undefined {
+	if (!h) return undefined;
+	if (typeof h === "string") return h;
+	if (typeof h === "object" && h !== null && "value" in h) {
+		const value = (h as { value?: unknown }).value;
+		return typeof value === "string" ? value : undefined;
+	}
+	return undefined;
 }
 
 /**
- * Se localHash e remoteHash são iguais, então o arquivo está "synced":
- * - lastSyncedHash precisa refletir isso (senão o diff acusa coisas erradas)
+ * Reconcila o estado sincronizado com base nos hashes local e remoto.
+ *
+ * Quando `lastLocalHash` e `lastRemoteHash` são iguais, o arquivo é considerado sincronizado
+ * e `lastSyncedHash` passa a refletir esse valor. Quando ambos não existem, `lastSyncedHash`
+ * também é removido.
+ *
+ * @param state Estado parcial do arquivo.
  */
-function reconcileSynced(state: Partial<FileSyncState>) {
-  const lh = normalizeHash((state as any).lastLocalHash);
-  const rh = normalizeHash((state as any).lastRemoteHash);
+function reconcileSynced(state: Partial<FileSyncState>): void {
+	const lh = normalizeHash(
+		(state as Partial<FileSyncState> & { lastLocalHash?: unknown })
+			.lastLocalHash,
+	);
+	const rh = normalizeHash(
+		(state as Partial<FileSyncState> & { lastRemoteHash?: unknown })
+			.lastRemoteHash,
+	);
 
-  if (lh && rh && lh === rh) {
-    (state as any).lastSyncedHash = (state as any).lastLocalHash;
-    return;
-  }
+	if (lh && rh && lh === rh) {
+		(
+			state as Partial<FileSyncState> & { lastSyncedHash?: unknown }
+		).lastSyncedHash = (
+			state as Partial<FileSyncState> & { lastLocalHash?: unknown }
+		).lastLocalHash;
+		return;
+	}
 
-  if (!lh && !rh) {
-    (state as any).lastSyncedHash = undefined;
-  }
-}
-
-async function exists(p: string) {
-  try {
-    await fs.stat(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function warnIfProbablyWrongVaultPath(vaultAbs: string) {
-  const obsidianHere = await exists(path.join(vaultAbs, ".obsidian"));
-  if (obsidianHere) return;
-
-  try {
-    const children = await fs.readdir(vaultAbs, { withFileTypes: true });
-    const candidates = children.filter((d) => d.isDirectory()).map((d) => d.name);
-    for (const name of candidates) {
-      const candidate = path.join(vaultAbs, name);
-      if (await exists(path.join(candidate, ".obsidian"))) {
-        console.warn(
-          `Atenção: não encontrei ".obsidian" em "${vaultAbs}". ` +
-            `Mas encontrei um vault em "${candidate}". ` +
-            `Talvez você queira usar esse caminho.`
-        );
-        return;
-      }
-    }
-  } catch {
-    // ignore
-  }
-
-  console.warn(
-    `Aviso: não encontrei ".obsidian" em "${vaultAbs}". ` +
-      `Se este for um vault novo, tudo bem.`
-  );
-}
-
-function pickHashFromEvent(e: HistoryEvent): FileHash | undefined {
-  return e?.change?.hash;
-}
-
-function isDeletedEvent(e: HistoryEvent) {
-  return e?.change?.changeType === "deleted";
+	if (!lh && !rh) {
+		(
+			state as Partial<FileSyncState> & { lastSyncedHash?: undefined }
+		).lastSyncedHash = undefined;
+	}
 }
 
 /**
- * Seleciona o ÚLTIMO evento por arquivo (para atualizar hashes corretamente)
+ * Verifica se um caminho existe no sistema de arquivos.
+ *
+ * @param p Caminho a verificar.
+ * @returns `true` quando o caminho existir.
+ */
+async function exists(p: string): Promise<boolean> {
+	try {
+		await fs.stat(p);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Emite aviso quando o caminho informado provavelmente não aponta para a raiz correta do vault.
+ *
+ * A função tenta localizar uma pasta `.obsidian` no diretório informado e também em subpastas
+ * imediatas para sugerir um caminho mais provável.
+ *
+ * @param vaultAbs Caminho absoluto do vault local.
+ */
+async function warnIfProbablyWrongVaultPath(vaultAbs: string): Promise<void> {
+	const obsidianHere = await exists(path.join(vaultAbs, ".obsidian"));
+	if (obsidianHere) return;
+
+	try {
+		const children = await fs.readdir(vaultAbs, { withFileTypes: true });
+		const candidates = children
+			.filter((d) => d.isDirectory())
+			.map((d) => d.name);
+
+		for (const name of candidates) {
+			const candidate = path.join(vaultAbs, name);
+
+			if (await exists(path.join(candidate, ".obsidian"))) {
+				console.warn(
+					`Atenção: não encontrei ".obsidian" em "${vaultAbs}". ` +
+						`Mas encontrei um vault em "${candidate}". ` +
+						`Talvez você queira usar esse caminho.`,
+				);
+				return;
+			}
+		}
+	} catch {}
+
+	console.warn(
+		`Aviso: não encontrei ".obsidian" em "${vaultAbs}". ` +
+			`Se este for um vault novo, tudo bem.`,
+	);
+}
+
+/**
+ * Obtém o hash associado a um evento de histórico.
+ *
+ * @param event Evento de histórico.
+ * @returns Hash do evento ou `undefined`.
+ */
+function pickHashFromEvent(event: HistoryEvent): FileHash | undefined {
+	return event.change?.hash;
+}
+
+/**
+ * Verifica se um evento representa exclusão de arquivo.
+ *
+ * @param event Evento de histórico.
+ * @returns `true` quando o evento for de deleção.
+ */
+function isDeletedEvent(event: HistoryEvent): boolean {
+	return event.change?.changeType === "deleted";
+}
+
+/**
+ * Obtém o path associado ao evento.
+ *
+ * @param event Evento de histórico.
+ * @returns Caminho do arquivo afetado.
+ */
+function getEventPath(event: HistoryEvent): string {
+	return event.change.path;
+}
+
+/**
+ * Obtém o tipo de alteração associado ao evento.
+ *
+ * @param event Evento de histórico.
+ * @returns Tipo da alteração.
+ */
+function getEventChangeType(event: HistoryEvent): string {
+	return event.change.changeType;
+}
+
+/**
+ * Obtém o hash normalizado de um evento.
+ *
+ * @param event Evento de histórico.
+ * @returns Hash normalizado ou `undefined`.
+ */
+function getEventNormalizedHash(event: HistoryEvent): string | undefined {
+	return normalizeHash(event.change.hash);
+}
+
+/**
+ * Constrói um mapa contendo apenas o evento mais recente de cada path.
+ *
+ * @param events Lista de eventos.
+ * @returns Mapa indexado por path com o último evento correspondente.
  */
 function buildLatestByPath(events: HistoryEvent[]): Map<string, HistoryEvent> {
-  const sorted = [...events].sort((a, b) => {
-    const aa = new Date(a.occurredAtIso).getTime();
-    const bb = new Date(b.occurredAtIso).getTime();
-    return aa - bb;
-  });
+	const sorted = [...events].sort((a, b) => {
+		const aa = new Date(a.occurredAtIso).getTime();
+		const bb = new Date(b.occurredAtIso).getTime();
+		return aa - bb;
+	});
 
-  const map = new Map<string, HistoryEvent>();
-  for (const e of sorted) map.set(e.change.path, e);
-  return map;
+	const map = new Map<string, HistoryEvent>();
+
+	for (const event of sorted) {
+		map.set(getEventPath(event), event);
+	}
+
+	return map;
 }
 
-async function main() {
-  const localVault = process.argv[2];
-  const remoteRoot = process.argv[3];
-  const strategyArg = (process.argv[4] ?? "local").toLowerCase();
+/**
+ * Lê todos os eventos do histórico local armazenados em arquivos `.jsonl`.
+ *
+ * Linhas inválidas são ignoradas silenciosamente para evitar que um registro corrompido
+ * interrompa a sincronização inteira.
+ *
+ * @param localHistoryDir Diretório de histórico local.
+ * @returns Lista de eventos válidos encontrados.
+ */
+async function readAllLocalHistory(
+	localHistoryDir: string,
+): Promise<HistoryEvent[]> {
+	let files: string[] = [];
 
-  if (!localVault || !remoteRoot) {
-    console.error('Uso: pnpm dev:sync-remote -- "<vaultLocal>" "<pastaRemota>" [local|remote]');
-    process.exit(1);
-  }
+	try {
+		files = (await fs.readdir(localHistoryDir))
+			.filter((file) => file.endsWith(".jsonl"))
+			.sort();
+	} catch {
+		return [];
+	}
 
-  const strategy: ConflictResolutionStrategy = strategyArg === "remote" ? "remote" : "local";
+	const events: HistoryEvent[] = [];
 
-  const vaultAbs = path.resolve(localVault);
-  const remoteAbs = path.resolve(remoteRoot);
+	for (const file of files) {
+		const content = await fs.readFile(
+			path.join(localHistoryDir, file),
+			"utf-8",
+		);
+		const lines = content.split("\n").filter((line) => line.trim().length > 0);
 
-  await warnIfProbablyWrongVaultPath(vaultAbs);
+		for (const line of lines) {
+			try {
+				events.push(JSON.parse(line) as HistoryEvent);
+			} catch {}
+		}
+	}
 
-  // ✅ NOVO: vaultId para estruturar MiniSync/<vaultId> no remoto
-  const vaultIdForRemote = path.basename(vaultAbs);
+	return events;
+}
 
-  // ✅ NOVO: provider agora recebe (remoteRootDir, vaultId)
-  const provider = new RemoteFolderSyncProvider(remoteAbs, vaultIdForRemote);
+/**
+ * Remove eventos locais redundantes do tipo `modified` quando não houve mudança real de hash.
+ *
+ * @param events Lista de eventos locais.
+ * @returns Lista filtrada sem modificações redundantes.
+ */
+function dedupeLocalNoHashChange(events: HistoryEvent[]): HistoryEvent[] {
+	const out: HistoryEvent[] = [];
+	const lastHashByPath = new Map<string, string | undefined>();
 
-  const cursorStore = new NodeRemoteCursorStore(); // opcional: namespace no futuro
-  const applier = new VaultEventApplier();
+	const sorted = [...events].sort((a, b) =>
+		a.occurredAtIso < b.occurredAtIso
+			? -1
+			: a.occurredAtIso > b.occurredAtIso
+				? 1
+				: 0,
+	);
 
-  const hasher = new NodeFileHasher();
-  const stateStore = new NodeSyncStateStore();
-  const historyRepository = new NodeHistoryRepository();
-  const decisionStore = new NodeConflictDecisionStore();
+	for (const event of sorted) {
+		const eventPath = getEventPath(event);
+		const eventType = getEventChangeType(event);
+		const eventHash = getEventNormalizedHash(event);
 
-  const nowIso = () => new Date().toISOString();
+		if (eventType === "modified") {
+			const previousHash = lastHashByPath.get(eventPath);
+			if (previousHash && eventHash && previousHash === eventHash) {
+				continue;
+			}
+		}
 
-  async function upsertStatePatch(patch: Partial<FileSyncState> & { path: string }) {
-    const prev = await stateStore.get(vaultAbs, patch.path);
+		lastHashByPath.set(eventPath, eventHash);
+		out.push(event);
+	}
 
-    const merged: FileSyncState = {
-      lastSyncedHash: prev?.lastSyncedHash,
-      lastLocalHash: prev?.lastLocalHash,
-      lastRemoteHash: prev?.lastRemoteHash,
-      updatedAtIso: nowIso(),
-      ...patch,
-    } as FileSyncState;
+	return out;
+}
 
-    const patchExplicitlySetSynced = Object.prototype.hasOwnProperty.call(patch, "lastSyncedHash");
-    if (!patchExplicitlySetSynced) {
-      reconcileSynced(merged);
-    }
+/**
+ * Cria uma assinatura semântica do evento para deduplicação.
+ *
+ * A assinatura considera path, tipo de alteração e hash, ignorando timestamp.
+ *
+ * @param event Evento de histórico.
+ * @returns Assinatura textual do evento.
+ */
+function buildSemanticSignature(event: HistoryEvent): string {
+	return `${getEventPath(event)}|${getEventChangeType(event)}|${getEventNormalizedHash(event)}`;
+}
 
-    await stateStore.upsert(vaultAbs, merged);
-  }
+/**
+ * Executa o fluxo completo de sincronização entre o vault local e a pasta remota.
+ *
+ * O fluxo inclui:
+ * - leitura do histórico local
+ * - pull incremental remoto
+ * - detecção e resolução de conflitos
+ * - aplicação de eventos remotos
+ * - atualização de cursor
+ * - push incremental local
+ * - consolidação final de estado
+ */
+async function main(): Promise<void> {
+	const localVault = process.argv[2];
+	const remoteRoot = process.argv[3];
+	const strategyArg = (process.argv[4] ?? "local").toLowerCase();
 
-  /* ------------------------------------------------------------------ */
-  /* 1) Read local history (estado local)                                */
-  /* ------------------------------------------------------------------ */
+	if (!localVault || !remoteRoot) {
+		console.error(
+			'Uso: pnpm dev:sync-remote -- "<vaultLocal>" "<pastaRemota>" [local|remote]',
+		);
+		process.exit(1);
+	}
 
-  const localHistoryDir = path.join(vaultAbs, ".mini-sync", "history");
-  let files: string[] = [];
-  try {
-    files = (await fs.readdir(localHistoryDir)).filter((f) => f.endsWith(".jsonl")).sort();
-  } catch {
-    files = [];
-  }
+	const strategy: ConflictResolutionStrategy =
+		strategyArg === "remote" ? "remote" : "local";
 
-  const allLocalEvents: HistoryEvent[] = [];
-  for (const f of files) {
-    const content = await fs.readFile(path.join(localHistoryDir, f), "utf-8");
-    const lines = content.split("\n").filter((l) => l.trim().length > 0);
-    for (const l of lines) {
-      try {
-        allLocalEvents.push(JSON.parse(l) as HistoryEvent);
-      } catch {
-        // ignore linha inválida
-      }
-    }
-  }
+	const vaultAbs = path.resolve(localVault);
+	const remoteAbs = path.resolve(remoteRoot);
 
-  console.log("Eventos locais encontrados:", allLocalEvents.length);
+	await warnIfProbablyWrongVaultPath(vaultAbs);
 
-  // Atualiza lastLocalHash baseado no ÚLTIMO evento por arquivo
-  const latestLocalByPath = buildLatestByPath(allLocalEvents);
-  for (const [p, ev] of latestLocalByPath.entries()) {
-    if (isDeletedEvent(ev)) {
-      await upsertStatePatch({ path: p, lastLocalHash: undefined });
-    } else {
-      const h = pickHashFromEvent(ev);
-      if (h) await upsertStatePatch({ path: p, lastLocalHash: h });
-    }
-  }
+	const vaultIdForRemote = path.basename(vaultAbs);
+	const provider = new RemoteFolderSyncProvider(remoteAbs, vaultIdForRemote);
 
-  /* ------------------------------------------------------------------ */
-  /* 2) PULL FIRST (remote -> local)                                     */
-  /* ------------------------------------------------------------------ */
+	const cursorStore = new NodeRemoteCursorStore();
+	const applier = new VaultEventApplier();
 
-  const cursor = await cursorStore.load(vaultAbs);
-  console.log("Pull a partir do cursor:", cursor?.value ?? "null");
+	const hasher = new NodeFileHasher();
+	const stateStore = new NodeSyncStateStore();
+	const historyRepository = new NodeHistoryRepository();
+	const decisionStore = new NodeConflictDecisionStore();
 
-  const { events: pulled, nextCursor } = await withRetry(
-    () => provider.pullHistoryEvents(cursor),
-    retryPolicy,
-    sleep
-  );
+	const nowIso = () => new Date().toISOString();
 
-  console.log("Pulled:", pulled.length, "nextCursor:", nextCursor?.value ?? "null");
+	/**
+	 * Atualiza parcialmente o estado de sincronização de um arquivo.
+	 *
+	 * Quando `lastSyncedHash` não é informado explicitamente, ele é recalculado com base
+	 * na reconciliação entre estado local e remoto.
+	 *
+	 * @param patch Patch parcial contendo o path e os campos a atualizar.
+	 */
+	async function upsertStatePatch(
+		patch: Partial<FileSyncState> & { path: string },
+	): Promise<void> {
+		const prev = await stateStore.get(vaultAbs, patch.path);
 
-  // Atualiza lastRemoteHash com base no ÚLTIMO evento remoto por arquivo nesse batch
-  const latestRemoteByPath = buildLatestByPath(pulled);
-  for (const [p, ev] of latestRemoteByPath.entries()) {
-    if (isDeletedEvent(ev)) {
-      await upsertStatePatch({ path: p, lastRemoteHash: undefined });
-    } else {
-      const h = pickHashFromEvent(ev);
-      if (h) await upsertStatePatch({ path: p, lastRemoteHash: h });
-    }
-  }
+		const merged: FileSyncState = {
+			lastSyncedHash: prev?.lastSyncedHash,
+			lastLocalHash: prev?.lastLocalHash,
+			lastRemoteHash: prev?.lastRemoteHash,
+			updatedAtIso: nowIso(),
+			...patch,
+		} as FileSyncState;
 
-  /* ------------------------------------------------------------------ */
-  /* 3) Detect conflicts BEFORE applying remote events                   */
-  /* ------------------------------------------------------------------ */
+		const patchExplicitlySetSynced = Object.hasOwn(patch, "lastSyncedHash");
 
-  const allStatesBefore = await stateStore.loadAll(vaultAbs);
-  const { conflicts: conflictsBefore, comparisons } = compareAllStates(allStatesBefore);
+		if (!patchExplicitlySetSynced) {
+			reconcileSynced(merged);
+		}
 
-  console.log("Resumo (antes da resolução):", {
-    total: comparisons.length,
-    conflicts: conflictsBefore.length,
-    localChanged: comparisons.filter((c) => c.status === "local_changed").length,
-    remoteChanged: comparisons.filter((c) => c.status === "remote_changed").length,
-    synced: comparisons.filter((c) => c.status === "synced").length,
-  });
+		await stateStore.upsert(vaultAbs, merged);
+	}
 
-  const remoteAllNowRes = await withRetry(
-    () => provider.pullHistoryEvents(null),
-    retryPolicy,
-    sleep
-  );
-  const remoteAllNow = remoteAllNowRes.events;
+	const localHistoryDir = path.join(vaultAbs, ".mini-sync", "history");
+	const allLocalEvents = await readAllLocalHistory(localHistoryDir);
 
-  if (conflictsBefore.length > 0) {
-    console.log(
-      `⚠️ Conflitos detectados (${conflictsBefore.length}). Estratégia padrão (CLI): manter ${strategy}.`
-    );
+	console.log("Eventos locais encontrados:", allLocalEvents.length);
 
-    for (const c of conflictsBefore) {
-      const rel = c.path.replaceAll("\\", "/");
+	const latestLocalByPath = buildLatestByPath(allLocalEvents);
 
-      const saved = await decisionStore.get(vaultAbs, rel);
-      const chosen: ConflictResolutionStrategy = saved?.strategy ?? strategy;
+	for (const [eventPath, event] of latestLocalByPath.entries()) {
+		if (isDeletedEvent(event)) {
+			await upsertStatePatch({ path: eventPath, lastLocalHash: undefined });
+		} else {
+			const hash = pickHashFromEvent(event);
+			if (hash) {
+				await upsertStatePatch({ path: eventPath, lastLocalHash: hash });
+			}
+		}
+	}
 
-      await decisionStore.set(vaultAbs, {
-        path: rel,
-        strategy: chosen,
-        decidedAtIso: new Date().toISOString(),
-      });
+	const cursor = await cursorStore.load(vaultAbs);
+	console.log("Pull a partir do cursor:", cursor?.value ?? "null");
 
-      if (chosen === "local") {
-        await resolveKeepLocal({
-          vaultRootAbs: vaultAbs,
-          conflicts: [c],
-          hasher,
-          provider,
-          historyRepository,
-          stateStore,
-        });
-      } else {
-        await resolveKeepRemote({
-          vaultRootAbs: vaultAbs,
-          conflicts: [c],
-          pulledRemoteEvents: remoteAllNow, // ✅ aqui é ARRAY de eventos
-          hasher,
-          historyRepository,
-          stateStore,
-        });
-      }
+	const { events: pulled, nextCursor } = await withRetry(
+		() => provider.pullHistoryEvents(cursor),
+		retryPolicy,
+		sleep,
+	);
 
-      console.log(`✅ Conflito resolvido (${rel}) com estratégia: ${chosen}`);
-    }
-  }
+	console.log(
+		"Pulled:",
+		pulled.length,
+		"nextCursor:",
+		nextCursor?.value ?? "null",
+	);
 
-  // Recompute conflicts after resolution (não aplicar eventos remotos desses paths)
-  const statesAfterResolution = await stateStore.loadAll(vaultAbs);
-  const { conflicts: conflictsAfterResolution } = compareAllStates(statesAfterResolution);
-  const conflictPaths = new Set(conflictsAfterResolution.map((c) => c.path));
+	const latestRemoteByPath = buildLatestByPath(pulled);
 
-  /* ------------------------------------------------------------------ */
-  /* 4) Apply remote events to the vault (with lock), excluindo conflitos */
-  /* ------------------------------------------------------------------ */
+	for (const [eventPath, event] of latestRemoteByPath.entries()) {
+		if (isDeletedEvent(event)) {
+			await upsertStatePatch({ path: eventPath, lastRemoteHash: undefined });
+		} else {
+			const hash = pickHashFromEvent(event);
+			if (hash) {
+				await upsertStatePatch({ path: eventPath, lastRemoteHash: hash });
+			}
+		}
+	}
 
-  const toApply = pulled.filter((ev) => !conflictPaths.has(ev.change.path));
+	const allStatesBefore = await stateStore.loadAll(vaultAbs);
+	const { conflicts: conflictsBefore, comparisons } =
+		compareAllStates(allStatesBefore);
 
-  if (toApply.length > 0) {
-    await setApplyLock(vaultAbs);
-    try {
-      await applier.apply(vaultAbs, toApply);
-    } finally {
-      await clearApplyLock(vaultAbs);
-    }
+	console.log("Resumo (antes da resolução):", {
+		total: comparisons.length,
+		conflicts: conflictsBefore.length,
+		localChanged: comparisons.filter((c) => c.status === "local_changed")
+			.length,
+		remoteChanged: comparisons.filter((c) => c.status === "remote_changed")
+			.length,
+		synced: comparisons.filter((c) => c.status === "synced").length,
+	});
 
-    // Após aplicar, marca como sincronizado no state
-    const latestAppliedByPath = buildLatestByPath(toApply);
-    for (const [p, ev] of latestAppliedByPath.entries()) {
-      if (isDeletedEvent(ev)) {
-        await upsertStatePatch({
-          path: p,
-          lastSyncedHash: undefined,
-          lastLocalHash: undefined,
-          lastRemoteHash: undefined,
-        });
-      } else {
-        const h = pickHashFromEvent(ev);
-        if (!h) continue;
-        await upsertStatePatch({
-          path: p,
-          lastSyncedHash: h,
-          lastLocalHash: h,
-          lastRemoteHash: h,
-        });
-      }
-    }
-  }
+	const remoteAllNowRes = await withRetry(
+		() => provider.pullHistoryEvents(null),
+		retryPolicy,
+		sleep,
+	);
 
-  /* ------------------------------------------------------------------ */
-  /* 5) Save cursor (após apply)                                         */
-  /* ------------------------------------------------------------------ */
+	const remoteAllNow = remoteAllNowRes.events;
 
-  await cursorStore.save(vaultAbs, nextCursor ?? cursor);
+	if (conflictsBefore.length > 0) {
+		console.log(
+			`⚠️ Conflitos detectados (${conflictsBefore.length}). Estratégia padrão (CLI): manter ${strategy}.`,
+		);
 
-  /* ------------------------------------------------------------------ */
-  /* 6) PUSH LAST (local -> remote), evita empurrar paths ainda em conflito */
-  /* ------------------------------------------------------------------ */
+		for (const conflict of conflictsBefore) {
+			const relativePath = conflict.path.replaceAll("\\", "/");
 
-  const finalStatesBeforePush = await stateStore.loadAll(vaultAbs);
-  const { conflicts: finalConflictsBeforePush } = compareAllStates(finalStatesBeforePush);
+			const saved = await decisionStore.get(vaultAbs, relativePath);
+			const chosen: ConflictResolutionStrategy = saved?.strategy ?? strategy;
 
-  const blockedPaths = new Set(finalConflictsBeforePush.map((c) => c.path));
+			await decisionStore.set(vaultAbs, {
+				path: relativePath,
+				strategy: chosen,
+				decidedAtIso: new Date().toISOString(),
+			});
 
-  // Dedupe contra remoto antes de enviar
-  const remoteAllBeforePushRes = await withRetry(
-    () => provider.pullHistoryEvents(null),
-    retryPolicy,
-    sleep
-  );
-  const remoteAllBeforePush = remoteAllBeforePushRes.events;
+			if (chosen === "local") {
+				await resolveKeepLocal({
+					vaultRootAbs: vaultAbs,
+					conflicts: [conflict],
+					hasher,
+					provider,
+					historyRepository,
+					stateStore,
+				});
+			} else {
+				await resolveKeepRemote({
+					vaultRootAbs: vaultAbs,
+					conflicts: [conflict],
+					pulledRemoteEvents: remoteAllNow,
+					hasher,
+					historyRepository,
+					stateStore,
+				});
+			}
 
-  const remoteIds = new Set(remoteAllBeforePush.map((e) => e.id));
+			console.log(
+				`✅ Conflito resolvido (${relativePath}) com estratégia: ${chosen}`,
+			);
+		}
+	}
 
-  const signature = (e: HistoryEvent) =>
-    `${e.change.path}|${e.change.changeType}|${normalizeHash(e.change.hash)}|${e.occurredAtIso}`;
+	const statesAfterResolution = await stateStore.loadAll(vaultAbs);
+	const { conflicts: conflictsAfterResolution } = compareAllStates(
+		statesAfterResolution,
+	);
 
-  const remoteSigs = new Set(remoteAllBeforePush.map(signature));
+	const conflictPaths = new Set(
+		conflictsAfterResolution.map((conflict) => conflict.path),
+	);
 
-  const toPush = allLocalEvents.filter(
-    (e) =>
-      !blockedPaths.has(e.change.path) &&
-      !remoteIds.has(e.id) &&
-      !remoteSigs.has(signature(e))
-  );
+	const toApply = pulled.filter(
+		(event) => !conflictPaths.has(getEventPath(event)),
+	);
 
-  const remoteEventsById = new Map(remoteAllBeforePush.map((e) => [e.id, e]));
+	if (toApply.length > 0) {
+		await setApplyLock(vaultAbs);
 
-  await withRetry(() => provider.pushHistoryEvents(toPush), retryPolicy, sleep);
+		try {
+			await applier.apply(vaultAbs, toApply);
+		} finally {
+			await clearApplyLock(vaultAbs);
+		}
 
-  // Após push OK, convergir para synced
-  const latestPushedByPath = buildLatestByPath(toPush);
-  for (const [p, ev] of latestPushedByPath.entries()) {
-    if (isDeletedEvent(ev)) {
-      await upsertStatePatch({
-        path: p,
-        lastLocalHash: undefined,
-        lastRemoteHash: undefined,
-        lastSyncedHash: undefined,
-      });
-    } else {
-      const h = pickHashFromEvent(ev);
-      if (!h) continue;
+		const latestAppliedByPath = buildLatestByPath(toApply);
 
-      await upsertStatePatch({
-        path: p,
-        lastLocalHash: h,
-        lastRemoteHash: h,
-        lastSyncedHash: h,
-      });
-    }
-  }
+		for (const [eventPath, event] of latestAppliedByPath.entries()) {
+			if (isDeletedEvent(event)) {
+				await upsertStatePatch({
+					path: eventPath,
+					lastSyncedHash: undefined,
+					lastLocalHash: undefined,
+					lastRemoteHash: undefined,
+				});
+			} else {
+				const hash = pickHashFromEvent(event);
+				if (!hash) continue;
 
-  console.log("Push OK:", toPush.length, "novos eventos enviados.");
+				await upsertStatePatch({
+					path: eventPath,
+					lastSyncedHash: hash,
+					lastLocalHash: hash,
+					lastRemoteHash: hash,
+				});
+			}
+		}
+	}
 
-  // Reconciliar o que já estava no remoto pelo id
-  const alreadyInRemote = allLocalEvents.filter((e) => remoteEventsById.has(e.id));
-  const latestAckedByPath = buildLatestByPath(alreadyInRemote);
+	await cursorStore.save(vaultAbs, nextCursor ?? cursor);
 
-  for (const [p, ev] of latestAckedByPath.entries()) {
-    if (isDeletedEvent(ev)) {
-      await upsertStatePatch({
-        path: p,
-        lastLocalHash: undefined,
-        lastRemoteHash: undefined,
-        lastSyncedHash: undefined,
-      });
-    } else {
-      const h = pickHashFromEvent(ev);
-      if (!h) continue;
+	const finalStatesBeforePush = await stateStore.loadAll(vaultAbs);
+	const { conflicts: finalConflictsBeforePush } = compareAllStates(
+		finalStatesBeforePush,
+	);
 
-      await upsertStatePatch({
-        path: p,
-        lastLocalHash: h,
-        lastRemoteHash: h,
-        lastSyncedHash: h,
-      });
-    }
-  }
+	const blockedPaths = new Set(
+		finalConflictsBeforePush.map((conflict) => conflict.path),
+	);
 
-  /* ------------------------------------------------------------------ */
-  /* 7) Final summary                                                   */
-  /* ------------------------------------------------------------------ */
+	const refreshedLocalEvents = await readAllLocalHistory(localHistoryDir);
+	const localCandidates = dedupeLocalNoHashChange(refreshedLocalEvents);
 
-  const allStatesAfter = await stateStore.loadAll(vaultAbs);
-  const { conflicts: conflictsAfter, comparisons: comparisonsAfter } =
-    compareAllStates(allStatesAfter);
+	const remoteAllBeforePushRes = await withRetry(
+		() => provider.pullHistoryEvents(null),
+		retryPolicy,
+		sleep,
+	);
 
-  console.log("Resumo (final):", {
-    total: comparisonsAfter.length,
-    conflicts: conflictsAfter.length,
-    localChanged: comparisonsAfter.filter((c) => c.status === "local_changed").length,
-    remoteChanged: comparisonsAfter.filter((c) => c.status === "remote_changed").length,
-    synced: comparisonsAfter.filter((c) => c.status === "synced").length,
-  });
+	const remoteAllBeforePush = remoteAllBeforePushRes.events;
 
-  if (conflictsAfter.length > 0) {
-    console.log("⚠️ Conflitos restantes:");
-    for (const c of conflictsAfter) console.log(`- ${c.path} [${c.type}]`);
-  } else {
-    if (blockedPaths.size > 0) {
-      console.log(
-        "✅ Nenhum conflito restante. Paths que foram bloqueados do push nesta execução:",
-        [...blockedPaths]
-      );
-    }
-  }
+	const remoteIds = new Set(remoteAllBeforePush.map((event) => event.id));
+
+	const remoteSemanticSigs = new Set(
+		remoteAllBeforePush.map(buildSemanticSignature),
+	);
+
+	const toPush = localCandidates.filter(
+		(event) =>
+			!blockedPaths.has(getEventPath(event)) &&
+			!remoteIds.has(event.id) &&
+			!remoteSemanticSigs.has(buildSemanticSignature(event)),
+	);
+
+	const remoteEventsById = new Map(
+		remoteAllBeforePush.map((event) => [event.id, event] as const),
+	);
+
+	await withRetry(() => provider.pushHistoryEvents(toPush), retryPolicy, sleep);
+
+	const latestPushedByPath = buildLatestByPath(toPush);
+
+	for (const [eventPath, event] of latestPushedByPath.entries()) {
+		if (isDeletedEvent(event)) {
+			await upsertStatePatch({
+				path: eventPath,
+				lastLocalHash: undefined,
+				lastRemoteHash: undefined,
+				lastSyncedHash: undefined,
+			});
+		} else {
+			const hash = pickHashFromEvent(event);
+			if (!hash) continue;
+
+			await upsertStatePatch({
+				path: eventPath,
+				lastLocalHash: hash,
+				lastRemoteHash: hash,
+				lastSyncedHash: hash,
+			});
+		}
+	}
+
+	console.log("Push OK:", toPush.length, "novos eventos enviados.");
+
+	const alreadyInRemote = refreshedLocalEvents.filter((event) =>
+		remoteEventsById.has(event.id),
+	);
+
+	const latestAckedByPath = buildLatestByPath(alreadyInRemote);
+
+	for (const [eventPath, event] of latestAckedByPath.entries()) {
+		if (isDeletedEvent(event)) {
+			await upsertStatePatch({
+				path: eventPath,
+				lastLocalHash: undefined,
+				lastRemoteHash: undefined,
+				lastSyncedHash: undefined,
+			});
+		} else {
+			const hash = pickHashFromEvent(event);
+			if (!hash) continue;
+
+			await upsertStatePatch({
+				path: eventPath,
+				lastLocalHash: hash,
+				lastRemoteHash: hash,
+				lastSyncedHash: hash,
+			});
+		}
+	}
+
+	const allStatesAfter = await stateStore.loadAll(vaultAbs);
+	const { conflicts: conflictsAfter, comparisons: comparisonsAfter } =
+		compareAllStates(allStatesAfter);
+
+	console.log("Resumo (final):", {
+		total: comparisonsAfter.length,
+		conflicts: conflictsAfter.length,
+		localChanged: comparisonsAfter.filter((c) => c.status === "local_changed")
+			.length,
+		remoteChanged: comparisonsAfter.filter((c) => c.status === "remote_changed")
+			.length,
+		synced: comparisonsAfter.filter((c) => c.status === "synced").length,
+	});
+
+	if (conflictsAfter.length > 0) {
+		console.log("⚠️ Conflitos restantes:");
+		for (const conflict of conflictsAfter) {
+			console.log(`- ${conflict.path} [${conflict.type}]`);
+		}
+	} else if (blockedPaths.size > 0) {
+		console.log(
+			"✅ Nenhum conflito restante. Paths que foram bloqueados do push nesta execução:",
+			[...blockedPaths],
+		);
+	}
 }
 
 main().catch((e) => {
-  console.error(e);
-  process.exit(1);
+	console.error(e);
+	process.exit(1);
 });

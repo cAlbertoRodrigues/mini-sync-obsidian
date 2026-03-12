@@ -1,9 +1,13 @@
-import type { DesktopApi } from "preload";
+import type { DesktopApi } from "./preload.js";
 
-export {};
+type WindowControlsApi = {
+	minimize?: () => void;
+	close?: () => void;
+};
 
 declare global {
-    interface Window {
-        api: DesktopApi;
-    }
+	interface Window {
+		api: DesktopApi;
+		windowControls?: WindowControlsApi;
+	}
 }

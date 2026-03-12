@@ -1,32 +1,34 @@
 import type { OAuth2Client } from "google-auth-library";
 import type { drive_v3 } from "googleapis";
 
+import type {
+	BlobKey,
+	SnapshotKey,
+	SyncCursor,
+	SyncProvider,
+} from "../ports/sync-provider";
 import type { HistoryEvent } from "../value-objects/history-event";
 import type { SnapshotManifest } from "../value-objects/snapshot-manifest";
-import type {
-  BlobKey,
-  SnapshotKey,
-  SyncCursor,
-  SyncProvider,
-} from "../ports/sync-provider";
 
 import { createDriveClient } from "./google-drive-client";
 import {
-  ensureVaultFolder,
-  ensureHistoryFolder,
-  ensureDailyHistoryFile,
-  ensureCursorFile,
-  ensureSnapshotsFolder,
-  downloadText,
-  uploadText,
-  appendJsonl,
-  ensureFolder,
+	appendJsonl,
+	downloadText,
+	ensureCursorFile,
+	ensureDailyHistoryFile,
+	ensureFolder,
+	ensureHistoryFolder,
+	ensureSnapshotsFolder,
+	ensureVaultFolder,
+	uploadText,
 } from "./google-drive-files";
 
 /**
- * SyncProvider baseado em Google Drive.
+ * Implementação de `SyncProvider` baseada em Google Drive.
  *
- * Estrutura no Drive:
+ * Estrutura remota utilizada:
+ *
+ * ```txt
  * mini-sync-obsidian/
  *   vaults/
  *     <vaultId>/
@@ -37,358 +39,460 @@ import {
  *         <snapshotId>.json
  *       blobs/
  *         <sha256>
+ * ```
  */
 export class GoogleDriveSyncProvider implements SyncProvider {
-  private readonly drive: drive_v3.Drive;
+	/**
+	 * Cliente autenticado do Google Drive.
+	 */
+	private readonly drive: drive_v3.Drive;
 
-  private static readonly BLOBS_FOLDER_NAME = "blobs";
+	/**
+	 * Nome da pasta onde blobs são armazenados dentro do vault remoto.
+	 */
+	private static readonly BLOBS_FOLDER_NAME = "blobs";
 
-  constructor(
-    private readonly auth: OAuth2Client,
-    private readonly vaultId: string
-  ) {
-    this.drive = createDriveClient(auth);
-  }
+	/**
+	 * Cria uma nova instância do provider de Google Drive.
+	 *
+	 * @param auth Cliente OAuth2 autenticado.
+	 * @param vaultId Identificador do vault remoto.
+	 */
+	constructor(
+		private readonly auth: OAuth2Client,
+		private readonly vaultId: string,
+	) {
+		this.drive = createDriveClient(auth);
+	}
 
-  // ------------------------------------------------------------------
-  // Cursor (extra — não faz parte da interface, mas é útil)
-  // ------------------------------------------------------------------
+	/**
+	 * Atualiza explicitamente o cursor remoto do vault.
+	 *
+	 * @param cursor Novo cursor remoto ou `null`.
+	 */
+	public async setRemoteCursor(cursor: SyncCursor | null): Promise<void> {
+		const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
+		await this.writeRemoteCursor(vaultFolderId, cursor);
+	}
 
-  public async setRemoteCursor(cursor: SyncCursor | null): Promise<void> {
-    const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
-    await this.writeRemoteCursor(vaultFolderId, cursor);
-  }
+	/**
+	 * Lê o cursor remoto persistido no vault.
+	 *
+	 * @param vaultFolderId Identificador da pasta do vault.
+	 * @returns Cursor remoto atual ou `null`.
+	 */
+	private async readRemoteCursor(
+		vaultFolderId: string,
+	): Promise<SyncCursor | null> {
+		const cursorFileId = await ensureCursorFile(this.auth, vaultFolderId);
+		const raw = await downloadText(this.auth, cursorFileId);
 
-  private async readRemoteCursor(
-    vaultFolderId: string
-  ): Promise<SyncCursor | null> {
-    const cursorFileId = await ensureCursorFile(this.auth, vaultFolderId);
-    const raw = await downloadText(this.auth, cursorFileId);
+		try {
+			const parsed = JSON.parse(raw);
+			return parsed?.value ? { value: String(parsed.value) } : null;
+		} catch {
+			return null;
+		}
+	}
 
-    try {
-      const parsed = JSON.parse(raw);
-      return parsed?.value ? { value: String(parsed.value) } : null;
-    } catch {
-      return null;
-    }
-  }
+	/**
+	 * Persiste o cursor remoto do vault.
+	 *
+	 * @param vaultFolderId Identificador da pasta do vault.
+	 * @param cursor Cursor a ser salvo.
+	 */
+	private async writeRemoteCursor(
+		vaultFolderId: string,
+		cursor: SyncCursor | null,
+	): Promise<void> {
+		const cursorFileId = await ensureCursorFile(this.auth, vaultFolderId);
 
-  private async writeRemoteCursor(
-    vaultFolderId: string,
-    cursor: SyncCursor | null
-  ): Promise<void> {
-    const cursorFileId = await ensureCursorFile(this.auth, vaultFolderId);
+		await uploadText(
+			this.auth,
+			cursorFileId,
+			JSON.stringify({ value: cursor?.value ?? null }, null, 2),
+			"application/json",
+		);
+	}
 
-    await uploadText(
-      this.auth,
-      cursorFileId,
-      JSON.stringify({ value: cursor?.value ?? null }, null, 2),
-      "application/json"
-    );
-  }
+	/**
+	 * Busca eventos de histórico remotos posteriores ao cursor informado.
+	 *
+	 * @param cursor Cursor da última sincronização conhecida.
+	 * @returns Eventos remotos e o próximo cursor calculado.
+	 */
+	public async pullHistoryEvents(
+		cursor: SyncCursor | null,
+	): Promise<{ events: HistoryEvent[]; nextCursor: SyncCursor | null }> {
+		const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
+		const historyFolderId = await ensureHistoryFolder(this.auth, vaultFolderId);
 
-  // ------------------------------------------------------------------
-  // History (interface)
-  // ------------------------------------------------------------------
+		const baseIso = cursor?.value ?? null;
+		const events: HistoryEvent[] = [];
 
-  public async pullHistoryEvents(
-    cursor: SyncCursor | null
-  ): Promise<{ events: HistoryEvent[]; nextCursor: SyncCursor | null }> {
-    const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
-    const historyFolderId = await ensureHistoryFolder(this.auth, vaultFolderId);
+		let pageToken: string | undefined;
 
-    const baseIso = cursor?.value ?? null;
-    const events: HistoryEvent[] = [];
+		do {
+			const res: drive_v3.Schema$FileList = (
+				await this.drive.files.list({
+					q: [
+						`'${historyFolderId}' in parents`,
+						"mimeType != 'application/vnd.google-apps.folder'",
+						"trashed = false",
+					].join(" and "),
+					fields: "nextPageToken, files(id,name)",
+					spaces: "drive",
+					pageSize: 1000,
+					pageToken,
+				})
+			).data;
 
-    // Lista arquivos YYYY-MM-DD.jsonl
-    let pageToken: string | undefined = undefined;
+			const files = (res.files ?? []).filter(
+				(file) => file.name?.endsWith(".jsonl"),
+			);
 
-    do {
-      const res: drive_v3.Schema$FileList = (
-        await this.drive.files.list({
-          q: [
-            `'${historyFolderId}' in parents`,
-            "mimeType != 'application/vnd.google-apps.folder'",
-            "trashed = false",
-          ].join(" and "),
-          fields: "nextPageToken, files(id,name)",
-          spaces: "drive",
-          pageSize: 1000,
-          pageToken,
-        })
-      ).data;
+			for (const file of files) {
+				if (!file.id || !file.name) continue;
 
-      const files = (res.files ?? []).filter(
-        (f) => f.name && f.name.endsWith(".jsonl")
-      );
+				const content = await downloadText(this.auth, file.id);
+				const lines = content.split("\n").filter(Boolean);
 
-      for (const f of files) {
-        if (!f.id || !f.name) continue;
+				for (const line of lines) {
+					try {
+						const event = JSON.parse(line) as HistoryEvent;
+						if (!baseIso || event.occurredAtIso > baseIso) {
+							events.push(event);
+						}
+					} catch {}
+				}
+			}
 
-        const content = await downloadText(this.auth, f.id);
-        const lines = content.split("\n").filter(Boolean);
+			pageToken = res.nextPageToken ?? undefined;
+		} while (pageToken);
 
-        for (const line of lines) {
-          try {
-            const ev = JSON.parse(line) as HistoryEvent;
-            if (!baseIso || ev.occurredAtIso > baseIso) {
-              events.push(ev);
-            }
-          } catch {
-            // tolera linha inválida
-          }
-        }
-      }
+		if (events.length === 0) {
+			return { events: [], nextCursor: cursor };
+		}
 
-      pageToken = res.nextPageToken ?? undefined;
-    } while (pageToken);
+		events.sort((a, b) => (a.occurredAtIso < b.occurredAtIso ? -1 : 1));
 
-    if (events.length === 0) {
-      return { events: [], nextCursor: cursor };
-    }
+		const lastEvent = events.at(-1);
+		const nextCursor = lastEvent
+			? { value: lastEvent.occurredAtIso }
+			: cursor;
 
-    // garante ordem por data (caso Drive retorne fora)
-    events.sort((a, b) => (a.occurredAtIso < b.occurredAtIso ? -1 : 1));
+		return {
+			events,
+			nextCursor,
+		};
+	}
 
-    const last = events[events.length - 1];
-    const nextCursor: SyncCursor = { value: last.occurredAtIso };
-    return { events, nextCursor };
-  }
+	/**
+	 * Envia eventos de histórico para o repositório remoto.
+	 *
+	 * @param events Eventos a serem enviados.
+	 */
+	public async pushHistoryEvents(events: HistoryEvent[]): Promise<void> {
+		if (events.length === 0) return;
 
-  public async pushHistoryEvents(events: HistoryEvent[]): Promise<void> {
-    if (events.length === 0) return;
+		const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
+		const historyFolderId = await ensureHistoryFolder(this.auth, vaultFolderId);
 
-    const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
-    const historyFolderId = await ensureHistoryFolder(this.auth, vaultFolderId);
+		const byDay = new Map<string, HistoryEvent[]>();
 
-    const byDay = new Map<string, HistoryEvent[]>();
-    for (const ev of events) {
-      const day = ev.occurredAtIso.slice(0, 10);
-      const list = byDay.get(day) ?? [];
-      list.push(ev);
-      byDay.set(day, list);
-    }
+		for (const event of events) {
+			const day = event.occurredAtIso.slice(0, 10);
+			const list = byDay.get(day) ?? [];
+			list.push(event);
+			byDay.set(day, list);
+		}
 
-    for (const [day, list] of byDay.entries()) {
-      const fileId = await ensureDailyHistoryFile(
-        this.auth,
-        historyFolderId,
-        day
-      );
+		for (const [day, list] of byDay.entries()) {
+			const fileId = await ensureDailyHistoryFile(
+				this.auth,
+				historyFolderId,
+				day,
+			);
 
-      const lines = list.map((e) => JSON.stringify(e));
-      await appendJsonl(this.auth, fileId, lines);
-    }
+			const lines = list.map((event) => JSON.stringify(event));
+			await appendJsonl(this.auth, fileId, lines);
+		}
 
-    // Atualiza cursor remoto com o último evento enviado
-    const last = events[events.length - 1];
-    await this.writeRemoteCursor(vaultFolderId, { value: last.occurredAtIso });
-  }
+		const lastEvent = events.at(-1);
+		if (lastEvent) {
+			await this.writeRemoteCursor(vaultFolderId, {
+				value: lastEvent.occurredAtIso,
+			});
+		}
+	}
 
-  // ------------------------------------------------------------------
-  // Blobs (interface)
-  // ------------------------------------------------------------------
+	/**
+	 * Garante a pasta de blobs dentro do vault remoto.
+	 *
+	 * @param vaultFolderId Identificador da pasta do vault.
+	 * @returns Identificador da pasta de blobs.
+	 */
+	private async ensureBlobsFolder(vaultFolderId: string): Promise<string> {
+		return ensureFolder(
+			this.auth,
+			vaultFolderId,
+			GoogleDriveSyncProvider.BLOBS_FOLDER_NAME,
+		);
+	}
 
-  private async ensureBlobsFolder(vaultFolderId: string): Promise<string> {
-    return ensureFolder(
-      this.auth,
-      vaultFolderId,
-      GoogleDriveSyncProvider.BLOBS_FOLDER_NAME
-    );
-  }
+	/**
+	 * Escapa um valor para uso em query da API do Google Drive.
+	 *
+	 * @param value Valor bruto.
+	 * @returns Valor escapado.
+	 */
+	private escapeQueryValue(value: string): string {
+		return value.replace(/'/g, "\\'");
+	}
 
-  private escapeQueryValue(v: string): string {
-    // Drive query usa aspas simples; precisa escapar '
-    return v.replace(/'/g, "\\'");
-  }
+	/**
+	 * Busca o id de um arquivo filho pelo nome dentro de uma pasta pai.
+	 *
+	 * @param parentId Identificador da pasta pai.
+	 * @param name Nome do arquivo procurado.
+	 * @returns Identificador do arquivo ou `null`.
+	 */
+	private async findChildFileIdByName(
+		parentId: string,
+		name: string,
+	): Promise<string | null> {
+		const q = [
+			`'${parentId}' in parents`,
+			`name = '${this.escapeQueryValue(name)}'`,
+			"trashed = false",
+		].join(" and ");
 
-  private async findChildFileIdByName(
-    parentId: string,
-    name: string
-  ): Promise<string | null> {
-    const q = [
-      `'${parentId}' in parents`,
-      `name = '${this.escapeQueryValue(name)}'`,
-      "trashed = false",
-    ].join(" and ");
+		const res = await this.drive.files.list({
+			q,
+			pageSize: 1,
+			fields: "files(id,name)",
+			spaces: "drive",
+		});
 
-    const res = await this.drive.files.list({
-      q,
-      pageSize: 1,
-      fields: "files(id,name)",
-      spaces: "drive",
-    });
+		return res.data.files?.[0]?.id ?? null;
+	}
 
-    return res.data.files?.[0]?.id ?? null;
-  }
+	/**
+	 * Baixa o conteúdo binário de um arquivo remoto.
+	 *
+	 * @param fileId Identificador do arquivo.
+	 * @returns Conteúdo binário em `Buffer`.
+	 */
+	private async downloadBytes(fileId: string): Promise<Buffer> {
+		type FilesGet = (
+			params: { fileId: string; alt?: "media" },
+			options?: { responseType?: "arraybuffer" },
+		) => Promise<{ data: ArrayBuffer }>;
 
-  private async downloadBytes(fileId: string): Promise<Buffer> {
-    // Tipagem mais permissiva pra suportar responseType no node
-    const files = this.drive.files as unknown as {
-      get: (
-        params: { fileId: string; alt?: "media" },
-        options?: { responseType?: "arraybuffer" }
-      ) => Promise<{ data: ArrayBuffer }>;
-    };
+		const files = this.drive.files as unknown as { get: FilesGet };
 
-    const res = await files.get(
-      { fileId, alt: "media" },
-      { responseType: "arraybuffer" }
-    );
+		const res = await files.get(
+			{ fileId, alt: "media" },
+			{ responseType: "arraybuffer" },
+		);
 
-    return Buffer.from(new Uint8Array(res.data));
-  }
+		return Buffer.from(new Uint8Array(res.data));
+	}
 
-  private async uploadBytes(
-    fileId: string,
-    data: Buffer,
-    mimeType = "application/octet-stream"
-  ): Promise<void> {
-    await this.drive.files.update({
-      fileId,
-      media: { mimeType, body: data as unknown as any },
-    });
-  }
+	/**
+	 * Sobrescreve um arquivo remoto com conteúdo binário.
+	 *
+	 * @param fileId Identificador do arquivo.
+	 * @param data Conteúdo binário.
+	 * @param mimeType Tipo MIME enviado para a API.
+	 */
+	private async uploadBytes(
+		fileId: string,
+		data: Buffer,
+		mimeType = "application/octet-stream",
+	): Promise<void> {
+		await this.drive.files.update({
+			fileId,
+			media: { mimeType, body: data as unknown as NodeJS.ReadableStream },
+		});
+	}
 
-  public async hasBlob(key: BlobKey): Promise<boolean> {
-    const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
-    const blobsFolderId = await this.ensureBlobsFolder(vaultFolderId);
+	/**
+	 * Verifica se um blob existe remotamente.
+	 *
+	 * @param key Chave do blob.
+	 * @returns `true` quando o blob existe.
+	 */
+	public async hasBlob(key: BlobKey): Promise<boolean> {
+		const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
+		const blobsFolderId = await this.ensureBlobsFolder(vaultFolderId);
 
-    const fileId = await this.findChildFileIdByName(blobsFolderId, key.sha256);
-    return !!fileId;
-  }
+		const fileId = await this.findChildFileIdByName(blobsFolderId, key.sha256);
+		return Boolean(fileId);
+	}
 
-  public async putBlob(key: BlobKey, data: Buffer): Promise<void> {
-    const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
-    const blobsFolderId = await this.ensureBlobsFolder(vaultFolderId);
+	/**
+	 * Armazena um blob remoto.
+	 *
+	 * @param key Chave do blob.
+	 * @param data Conteúdo binário do blob.
+	 */
+	public async putBlob(key: BlobKey, data: Buffer): Promise<void> {
+		const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
+		const blobsFolderId = await this.ensureBlobsFolder(vaultFolderId);
 
-    const existingId = await this.findChildFileIdByName(
-      blobsFolderId,
-      key.sha256
-    );
+		const existingId = await this.findChildFileIdByName(
+			blobsFolderId,
+			key.sha256,
+		);
 
-    if (existingId) {
-      await this.uploadBytes(existingId, data);
-      return;
-    }
+		if (existingId) {
+			await this.uploadBytes(existingId, data);
+			return;
+		}
 
-    const created = await this.drive.files.create({
-      requestBody: {
-        name: key.sha256,
-        parents: [blobsFolderId],
-      },
-      media: {
-        mimeType: "application/octet-stream",
-        body: data as unknown as any,
-      },
-      fields: "id",
-    });
+		const created = await this.drive.files.create({
+			requestBody: {
+				name: key.sha256,
+				parents: [blobsFolderId],
+			},
+			media: {
+				mimeType: "application/octet-stream",
+				body: data as unknown as NodeJS.ReadableStream,
+			},
+			fields: "id",
+		});
 
-    if (!created.data.id) {
-      throw new Error("Falha ao criar blob no Google Drive");
-    }
-  }
+		if (!created.data.id) {
+			throw new Error("Falha ao criar blob no Google Drive");
+		}
+	}
 
-  public async getBlob(key: BlobKey): Promise<Buffer> {
-    const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
-    const blobsFolderId = await this.ensureBlobsFolder(vaultFolderId);
+	/**
+	 * Recupera um blob remoto.
+	 *
+	 * @param key Chave do blob.
+	 * @returns Conteúdo binário do blob.
+	 */
+	public async getBlob(key: BlobKey): Promise<Buffer> {
+		const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
+		const blobsFolderId = await this.ensureBlobsFolder(vaultFolderId);
 
-    const fileId = await this.findChildFileIdByName(blobsFolderId, key.sha256);
-    if (!fileId) {
-      throw new Error(`Blob não encontrado no Drive: ${key.sha256}`);
-    }
+		const fileId = await this.findChildFileIdByName(blobsFolderId, key.sha256);
+		if (!fileId) {
+			throw new Error(`Blob não encontrado no Drive: ${key.sha256}`);
+		}
 
-    return this.downloadBytes(fileId);
-  }
+		return this.downloadBytes(fileId);
+	}
 
-  // ------------------------------------------------------------------
-  // Snapshots (interface)
-  // ------------------------------------------------------------------
+	/**
+	 * Lista os snapshots disponíveis remotamente.
+	 *
+	 * @returns Lista de chaves de snapshot ordenadas pelo id.
+	 */
+	public async listSnapshots(): Promise<SnapshotKey[]> {
+		const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
+		const snapshotsFolderId = await ensureSnapshotsFolder(
+			this.auth,
+			vaultFolderId,
+		);
 
-  public async listSnapshots(): Promise<SnapshotKey[]> {
-    const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
-    const snapshotsFolderId = await ensureSnapshotsFolder(
-      this.auth,
-      vaultFolderId
-    );
+		const res = await this.drive.files.list({
+			q: [
+				`'${snapshotsFolderId}' in parents`,
+				"mimeType != 'application/vnd.google-apps.folder'",
+				"trashed = false",
+			].join(" and "),
+			fields: "files(id,name)",
+			spaces: "drive",
+			pageSize: 1000,
+		});
 
-    const res = await this.drive.files.list({
-      q: [
-        `'${snapshotsFolderId}' in parents`,
-        "mimeType != 'application/vnd.google-apps.folder'",
-        "trashed = false",
-      ].join(" and "),
-      fields: "files(id,name)",
-      spaces: "drive",
-      pageSize: 1000,
-    });
+		const keys: SnapshotKey[] = [];
 
-    const keys: SnapshotKey[] = [];
-    for (const f of res.data.files ?? []) {
-      if (!f.name) continue;
-      if (!f.name.endsWith(".json")) continue;
+		for (const file of res.data.files ?? []) {
+			if (!file.name?.endsWith(".json")) continue;
 
-      const id = f.name.slice(0, -".json".length);
-      if (id) keys.push({ id });
-    }
+			const id = file.name.slice(0, -".json".length);
+			if (id) {
+				keys.push({ id });
+			}
+		}
 
-    // ordena por id (o provider decide a ordenação)
-    keys.sort((a, b) => (a.id < b.id ? -1 : 1));
-    return keys;
-  }
+		keys.sort((a, b) => (a.id < b.id ? -1 : 1));
+		return keys;
+	}
 
-  public async putSnapshotManifest(
-    key: SnapshotKey,
-    manifest: SnapshotManifest
-  ): Promise<void> {
-    const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
-    const snapshotsFolderId = await ensureSnapshotsFolder(
-      this.auth,
-      vaultFolderId
-    );
+	/**
+	 * Salva ou atualiza o manifest de um snapshot remoto.
+	 *
+	 * @param key Chave do snapshot.
+	 * @param manifest Manifest a ser persistido.
+	 */
+	public async putSnapshotManifest(
+		key: SnapshotKey,
+		manifest: SnapshotManifest,
+	): Promise<void> {
+		const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
+		const snapshotsFolderId = await ensureSnapshotsFolder(
+			this.auth,
+			vaultFolderId,
+		);
 
-    const name = `${key.id}.json`;
-    const existingId = await this.findChildFileIdByName(snapshotsFolderId, name);
+		const name = `${key.id}.json`;
+		const existingId = await this.findChildFileIdByName(
+			snapshotsFolderId,
+			name,
+		);
 
-    const content = JSON.stringify(manifest, null, 2);
+		const content = JSON.stringify(manifest, null, 2);
 
-    if (existingId) {
-      await uploadText(this.auth, existingId, content, "application/json");
-      return;
-    }
+		if (existingId) {
+			await uploadText(this.auth, existingId, content, "application/json");
+			return;
+		}
 
-    const created = await this.drive.files.create({
-      requestBody: {
-        name,
-        parents: [snapshotsFolderId],
-      },
-      media: {
-        mimeType: "application/json",
-        body: content,
-      },
-      fields: "id",
-    });
+		const created = await this.drive.files.create({
+			requestBody: {
+				name,
+				parents: [snapshotsFolderId],
+			},
+			media: {
+				mimeType: "application/json",
+				body: content,
+			},
+			fields: "id",
+		});
 
-    if (!created.data.id) {
-      throw new Error("Falha ao criar snapshot manifest no Google Drive");
-    }
-  }
+		if (!created.data.id) {
+			throw new Error("Falha ao criar snapshot manifest no Google Drive");
+		}
+	}
 
-  public async getSnapshotManifest(key: SnapshotKey): Promise<SnapshotManifest> {
-    const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
-    const snapshotsFolderId = await ensureSnapshotsFolder(
-      this.auth,
-      vaultFolderId
-    );
+	/**
+	 * Recupera o manifest de um snapshot remoto.
+	 *
+	 * @param key Chave do snapshot.
+	 * @returns Manifest do snapshot.
+	 */
+	public async getSnapshotManifest(
+		key: SnapshotKey,
+	): Promise<SnapshotManifest> {
+		const vaultFolderId = await ensureVaultFolder(this.auth, this.vaultId);
+		const snapshotsFolderId = await ensureSnapshotsFolder(
+			this.auth,
+			vaultFolderId,
+		);
 
-    const name = `${key.id}.json`;
-    const fileId = await this.findChildFileIdByName(snapshotsFolderId, name);
+		const name = `${key.id}.json`;
+		const fileId = await this.findChildFileIdByName(snapshotsFolderId, name);
 
-    if (!fileId) {
-      throw new Error(`Snapshot manifest não encontrado: ${key.id}`);
-    }
+		if (!fileId) {
+			throw new Error(`Snapshot manifest não encontrado: ${key.id}`);
+		}
 
-    const raw = await downloadText(this.auth, fileId);
-    return JSON.parse(raw) as SnapshotManifest;
-  }
+		const raw = await downloadText(this.auth, fileId);
+		return JSON.parse(raw) as SnapshotManifest;
+	}
 }

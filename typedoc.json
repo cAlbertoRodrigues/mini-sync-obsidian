@@ -1,0 +1,19 @@
+{
+  "entryPoints": [
+    "packages/core-domain/src/index.ts",
+    "packages/core-application/src/index.ts"
+  ],
+  "entryPointStrategy": "resolve",
+  "out": "docs",
+  "tsconfig": "tsconfig.docs.json",
+  "exclude": [
+    "**/node_modules/**",
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "**/dist/**",
+    "**/build/**",
+    "apps/**"
+  ],
+  "excludePrivate": true,
+  "excludeInternal": true
+}

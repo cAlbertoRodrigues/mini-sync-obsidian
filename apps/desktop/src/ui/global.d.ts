@@ -1,9 +1,7 @@
 import type { DesktopApi } from "../preload";
 
-export {};
-
 declare global {
-  interface Window {
-    api: DesktopApi;
-  }
+	interface Window {
+		api: DesktopApi;
+	}
 }

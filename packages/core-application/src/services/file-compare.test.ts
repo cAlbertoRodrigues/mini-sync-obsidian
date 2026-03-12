@@ -4,15 +4,22 @@ import { compareFileState, detectConflictFromState } from "./sync-diff.js";
 type CompareInput = Parameters<typeof compareFileState>[0];
 
 /**
- * Cria um "estado" mínimo para os testes.
- * Usamos `unknown as CompareInput` para evitar `any` e ainda permitir testes
- * sem precisar montar todos os campos obrigatórios do estado real.
+ * Cria um estado mínimo de comparação para testes.
+ *
+ * A conversão `unknown as CompareInput` permite montar apenas os campos
+ * necessários para os cenários testados sem depender da estrutura completa
+ * do estado real.
+ *
+ * @param path Caminho do arquivo.
+ * @param lastSyncedHash Hash do último estado sincronizado.
+ * @param lastLocalHash Hash atual local.
+ * @param lastRemoteHash Hash atual remoto.
  */
 function s(
   path: string,
   lastSyncedHash?: unknown,
   lastLocalHash?: unknown,
-  lastRemoteHash?: unknown
+  lastRemoteHash?: unknown,
 ): CompareInput {
   return {
     path,
@@ -23,52 +30,52 @@ function s(
 }
 
 describe("file-compare", () => {
-  it("ok: quando synced/local/remote são iguais", () => {
+  it("returns synced when hashes are equal", () => {
     const r = compareFileState(s("a.md", "h1", "h1", "h1"));
     expect(r.status).toBe("synced");
   });
 
-  it("localChanged: quando local difere do synced", () => {
+  it("detects local change", () => {
     const r = compareFileState(s("a.md", "h1", "h2", "h1"));
     expect(r.status).toBe("local_changed");
   });
 
-  it("remoteChanged: quando remote difere do synced", () => {
+  it("detects remote change", () => {
     const r = compareFileState(s("a.md", "h1", "h1", "h2"));
     expect(r.status).toBe("remote_changed");
   });
 
-  it("bothChanged: quando local e remote diferem do synced (mas são iguais entre si)", () => {
+  it("detects unchanged when local and remote match each other but differ from synced", () => {
     const r = compareFileState(s("a.md", "h1", "h2", "h2"));
     expect(r.status).toBe("unchanged");
   });
 
-  it("conflict: quando local e remote diferem entre si e ambos diferem do synced", () => {
+  it("detects conflict when local and remote diverge from synced and from each other", () => {
     const r = compareFileState(s("a.md", "base", "local", "remote"));
     expect(r.status).toBe("conflict");
   });
 
-  it("conflict detection: modified_modified", () => {
+  it("detects modified_modified conflict", () => {
     const c = detectConflictFromState(s("a.md", "base", "local", "remote"));
     expect(c?.type).toBe("modified_modified");
   });
 
-  it("conflict detection: deleted_modified (local deleted)", () => {
+  it("detects deleted_modified conflict when local deleted", () => {
     const c = detectConflictFromState(s("a.md", "base", undefined, "remote"));
     expect(c?.type).toBe("deleted_modified");
   });
 
-  it("conflict detection: deleted_modified (remote deleted)", () => {
+  it("detects modified_deleted conflict when remote deleted", () => {
     const c = detectConflictFromState(s("a.md", "base", "local", undefined));
     expect(c?.type).toBe("modified_deleted");
   });
 
-  it("no conflict: only local changed", () => {
+  it("returns null when only local changed", () => {
     const c = detectConflictFromState(s("a.md", "base", "local", "base"));
     expect(c).toBe(null);
   });
 
-  it("no conflict: only remote changed", () => {
+  it("returns null when only remote changed", () => {
     const c = detectConflictFromState(s("a.md", "base", "base", "remote"));
     expect(c).toBe(null);
   });

@@ -1,16 +1,35 @@
 import type { FileHash } from "../ports/file-hasher";
 
+/**
+ * Representa o estado de sincronização de um arquivo específico.
+ *
+ * Esse estado é utilizado pelo mecanismo de diff para determinar
+ * se o arquivo está sincronizado, alterado localmente, alterado
+ * remotamente ou em conflito.
+ */
 export type FileSyncState = {
+  /**
+   * Caminho relativo do arquivo dentro do vault (formato POSIX).
+   */
   path: string;
 
-  // último estado conhecido que foi "aceito" como sincronizado
+  /**
+   * Hash do último estado considerado sincronizado entre local e remoto.
+   */
   lastSyncedHash?: FileHash;
 
-  // último estado local observado
+  /**
+   * Hash do último estado observado no vault local.
+   */
   lastLocalHash?: FileHash;
 
-  // último estado remoto observado
+  /**
+   * Hash do último estado observado no remoto.
+   */
   lastRemoteHash?: FileHash;
 
+  /**
+   * Timestamp ISO indicando a última atualização deste estado.
+   */
   updatedAtIso: string;
 };

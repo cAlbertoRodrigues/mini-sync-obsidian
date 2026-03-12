@@ -12,16 +12,23 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
-  "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-  "build": "pnpm run clean && tsc -p tsconfig.json && node ./scripts/fix-esm-imports.mjs"
-}
-,
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "pnpm run clean && tsc -p tsconfig.json && node ./scripts/fix-esm-imports.mjs",
+    "dev:watch-vault": "tsx src/dev/watch-vault.ts",
+    "dev:sync-drive": "tsx src/dev/sync-drive.ts"
+  },
   "dependencies": {
-    "@mini-sync/core-domain": "workspace:*",
     "@google-cloud/local-auth": "^3.0.1",
+    "@mini-sync/core-domain": "workspace:*",
+    "fs-extra": "^11.3.4",
     "google-auth-library": "^10.5.0",
-    "googleapis": "^170.1.0"
+    "googleapis": "^170.1.0",
+    "promise-retry": "^2.0.1",
+    "proper-lockfile": "^4.1.2",
+    "winston": "^3.19.0"
   }
 }

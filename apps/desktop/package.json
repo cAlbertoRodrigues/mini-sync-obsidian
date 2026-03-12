@@ -1,21 +1,39 @@
 {
   "name": "@mini-sync/desktop",
   "version": "0.1.0",
+  "description": "Desktop app for Mini Sync Obsidian",
+  "author": "Carlos",
   "private": true,
   "type": "module",
   "main": "dist/main.js",
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "pnpm run clean && tsc -p tsconfig.json && cpy \"src/index.html\" dist --flat && cpy \"src/preload.cjs\" dist --flat && cpy \"src/styles/**/*\" dist/styles && cpy \"src/assets/**/*\" dist/assets",
+    "pack:app": "electron-builder --dir",
+    "dist": "electron-builder",
     "dev": "pnpm run build && electron ."
   },
   "dependencies": {
     "@mini-sync/core-application": "workspace:*",
-    "@mini-sync/core-domain": "workspace:*",
-    "electron": "^29.0.0"
+    "@mini-sync/core-domain": "workspace:*"
   },
   "devDependencies": {
     "cpy-cli": "^6.0.0",
+    "electron": "^29.0.0",
+    "electron-builder": "^26.8.1",
     "typescript": "^5.3.3"
+  },
+  "build": {
+    "appId": "mini.sync.obsidian",
+    "productName": "MiniSync",
+    "files": [
+      "dist/**/*"
+    ],
+    "directories": {
+      "buildResources": "src/assets"
+    },
+    "win": {
+      "target": "nsis"
+    }
   }
 }

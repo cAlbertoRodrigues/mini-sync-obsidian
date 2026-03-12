@@ -1,15 +1,19 @@
 import { mountOnboarding } from "./ui/onboarding.js";
 import { subscribeSyncStatus } from "./ui/providers/sync-provider.js";
-import { loadVaults } from "./ui/state/vaults-store.js";
 
+/**
+ * Inicializa a interface do renderer process quando o DOM estiver pronto.
+ *
+ * O fluxo de inicialização:
+ * - localiza o elemento raiz da aplicação
+ * - monta a interface de onboarding
+ * - registra a escuta de eventos de status de sincronização enviados pelo main process
+ */
 window.addEventListener("DOMContentLoaded", () => {
-  const root = document.getElementById("app");
-  if (!root) throw new Error("Mini Sync: #app não encontrado");
-  mountOnboarding(root);
-});
+	const root = document.getElementById("app");
+	if (!root) return;
 
-subscribeSyncStatus((p) => {
-  // se você tiver uma função global de re-render, chama aqui
-  // exemplo: rerenderSidebar()
-  console.log("sync:status", p);
+	mountOnboarding(root);
+
+	subscribeSyncStatus(() => {});
 });
